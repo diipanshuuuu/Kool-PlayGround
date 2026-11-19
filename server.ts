@@ -135,7 +135,7 @@ async function performLiveWebSearch(
           query
         )}&utf8=&format=json&srlimit=${maxResults}`,
         {
-          headers: { 'User-Agent': 'KurukshetraPlayground/1.0' },
+          headers: { 'User-Agent': 'KoolPlayground/1.0' },
           signal: controller.signal,
         }
       );
@@ -692,7 +692,7 @@ async function startServer() {
       };
       if (provider === 'openrouter') {
         headers['HTTP-Referer'] = process.env.APP_URL || 'http://localhost:3000';
-        headers['X-Title'] = 'Kurukshetra Playground';
+        headers['X-Title'] = 'Kool PlayGround';
       }
 
       const upstream = await fetch(endpoint, {
@@ -829,7 +829,7 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Kurukshetra server running on http://0.0.0.0:${PORT}`);
+    console.log(`Kool PlayGround server running on http://0.0.0.0:${PORT}`);
   });
 }
 

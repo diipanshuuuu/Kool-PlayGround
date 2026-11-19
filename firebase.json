@@ -1,5 +1,6 @@
 {
   "hosting": {
+    "site": "koolplayground",
     "public": "dist",
     "ignore": [
       "firebase.json",
