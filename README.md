@@ -1,5 +1,7 @@
 # Kool PlayGround
 
+![Kool PlayGround Preview](public/preview.png)
+
 A minimal, distraction-free, bring-your-own-key (BYOK) LLM playground inspired by Groq Playground. Test prompts across multiple model providers with full sampling controls, live prompt shot-type detection, web search grounding, and client-only API key management.
 
 ## Features
