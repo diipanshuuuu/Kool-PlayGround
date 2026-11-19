@@ -1,0 +1,58 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build outputs
+dist/
+build/
+out/
+server.js
+*.tsbuildinfo
+
+# Environment & local secrets
+.env
+.env.*
+!.env.example
+
+# Logs & diagnostics
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Testing & browser verification artifacts
+coverage/
+.nyc_output/
+.playwright-cli/
+playwright-report/
+test-results/
+
+# Caches & temporary files
+.cache/
+.vite/
+.eslintcache
+tmp/
+temp/
+*.tmp
+
+# Editor & IDE files
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+*.swo
+*~
+
+# OS metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+Desktop.ini

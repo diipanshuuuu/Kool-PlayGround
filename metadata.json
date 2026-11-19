@@ -1,0 +1,6 @@
+{
+  "name": "Kestrel",
+  "description": "A clean, minimal bring-your-own-key LLM playground with ephemeral or local key storage, live parameter controls, and web search grounding.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
