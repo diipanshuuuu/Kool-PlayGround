@@ -38,6 +38,11 @@ import {
   saveSessionToStorage,
 } from './sessionsStorage';
 import { classifyPromptShotType } from './promptAnalysis';
+import {
+  buildDirectProviderRequest,
+  isStaticFallbackResponse,
+  resolveDirectProviderBaseUrl,
+} from './directClient';
 
 function createMemoryStorage(): StorageLike {
   const data = new Map<string, string>();
@@ -351,6 +356,64 @@ Question: What is 9+7?`);
   );
   assert.equal(systemFewShot?.type, 'few-shot');
 });
+
+test('directClient detects static Firebase Hosting HTML fallback and builds valid direct provider requests', () => {
+  const htmlResp = new Response('<!doctype html><html></html>', {
+    status: 200,
+    headers: { 'content-type': 'text/html; charset=utf-8' },
+  });
+  assert.equal(isStaticFallbackResponse(htmlResp), true);
+
+  const notFoundResp = new Response('Not Found', { status: 404 });
+  assert.equal(isStaticFallbackResponse(notFoundResp), true);
+
+  const sseResp = new Response('data: {}\n\n', {
+    status: 200,
+    headers: { 'content-type': 'text/event-stream' },
+  });
+  assert.equal(isStaticFallbackResponse(sseResp), false);
+
+  const groqReq = buildDirectProviderRequest({
+    provider: 'groq',
+    apiKey: 'gsk_test123',
+    model: 'openai/gpt-oss-120b',
+    systemPrompt: 'Be brief.',
+    messages: [{ role: 'user', content: 'Hello' }],
+    params: {
+      ...DEFAULT_PLAYGROUND_PARAMS,
+      temperature: 0.3,
+      browserSearch: true,
+      jsonMode: true,
+      reasoningEffort: 'high',
+    },
+  });
+  assert.equal(groqReq.url, 'https://api.groq.com/openai/v1/chat/completions');
+  assert.equal(groqReq.headers.Authorization, 'Bearer gsk_test123');
+  assert.equal(groqReq.usedNativeSearch, true);
+  assert.deepEqual(groqReq.body.tools, [{ type: 'browser_search' }]);
+  assert.deepEqual(groqReq.body.response_format, { type: 'json_object' });
+  assert.equal(groqReq.body.reasoning_effort, 'high');
+
+  const anthropicReq = buildDirectProviderRequest({
+    provider: 'anthropic',
+    apiKey: 'sk-ant-test',
+    model: 'claude-sonnet-4-20250514',
+    systemPrompt: 'Helpful assistant.',
+    messages: [{ role: 'user', content: 'Hi' }],
+    params: { ...DEFAULT_PLAYGROUND_PARAMS, temperature: 1.5 },
+  });
+  assert.equal(anthropicReq.url, 'https://api.anthropic.com/v1/messages');
+  assert.equal(anthropicReq.isAnthropic, true);
+  assert.equal(anthropicReq.headers['anthropic-dangerous-direct-browser-access'], 'true');
+  assert.equal(anthropicReq.body.temperature, 1);
+
+  assert.equal(
+    resolveDirectProviderBaseUrl('custom', 'https://api.together.xyz/v1/'),
+    'https://api.together.xyz/v1'
+  );
+  assert.equal(resolveDirectProviderBaseUrl('custom', 'ftp://bad.example'), null);
+});
+
 
 
 

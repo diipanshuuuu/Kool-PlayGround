@@ -30,6 +30,13 @@ coverage/
 playwright-report/
 test-results/
 
+# Firebase local cache & debug logs (keep firebase.json, .firebaserc, apphosting.yaml tracked)
+.firebase/
+firebase-debug.log
+firebase-debug.*.log
+firestore-debug.log
+ui-debug.log
+
 # Caches & temporary files
 .cache/
 .vite/
@@ -37,6 +44,7 @@ test-results/
 tmp/
 temp/
 *.tmp
+public/assets/aistudio/
 
 # Editor & IDE files
 .vscode/*

@@ -72,8 +72,44 @@ NODE_ENV=production npm start
 
 ```bash
 npm run lint
-npx tsx --test src/lib/playground.test.ts
+npm test
 ```
+
+## Deploy to Firebase
+
+This repository is pre-configured so you can clone it from GitHub and deploy straight to Firebase with no extra setup.
+
+### Option 1: Firebase Hosting (Static — Free Spark Plan)
+
+Best for instant, zero-cost deployment. When hosted statically on Firebase Hosting, Kurukshetra automatically switches BYOK requests (**Groq**, **OpenAI**, **Anthropic**, **OpenRouter**, and CORS-enabled **Custom** endpoints) to direct browser-to-provider API calls—including key verification, streaming, sampling controls, JSON mode, and native Groq web search (`openai/gpt-oss-*` / `groq/compound*`).
+
+```bash
+git clone <your-repo-url>
+cd <your-repo-directory>
+npm install
+npm install -g firebase-tools
+
+firebase login
+firebase use --add        # select your Firebase project
+firebase deploy           # automatically runs `npm run build` and deploys dist/
+```
+
+Or deploy directly to a specific project ID in one command:
+
+```bash
+firebase deploy --only hosting --project <your-firebase-project-id>
+```
+
+### Option 2: Firebase App Hosting (Full-Stack Node.js)
+
+Use **Firebase App Hosting** if you also want the Express `/api/*` backend for server-side web search grounding on non-native models and the optional Built-in Sandbox route:
+
+1. Push this repository to GitHub (keep `apphosting.yaml`, `package.json`, and `server.ts`).
+2. In the [Firebase Console](https://console.firebase.google.com/), open **App Hosting** and connect your GitHub repository.
+3. *(Optional)* To enable the Built-in Sandbox route, store a Gemini API key secret and uncomment `GEMINI_API_KEY` in `apphosting.yaml`:
+   ```bash
+   firebase apphosting:secrets:set GEMINI_API_KEY
+   ```
 
 ## Security & Privacy Model
 

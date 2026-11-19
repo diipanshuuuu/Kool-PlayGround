@@ -20,6 +20,10 @@ import {
   maskApiKey,
   validateKeyFormatHint,
 } from '../lib/keyStorage';
+import {
+  isStaticFallbackResponse,
+  verifyProviderKeyDirect,
+} from '../lib/directClient';
 import type { ApiKeyStore, KeyStorageMode, ProviderId } from '../lib/types';
 
 interface ApiKeyModalProps {
@@ -144,6 +148,27 @@ export function ApiKeyModal({
           customBaseUrl: selectedProvider === 'custom' ? customBaseUrl : undefined,
         }),
       });
+
+      if (isStaticFallbackResponse(resp)) {
+        const directResult = await verifyProviderKeyDirect({
+          provider: selectedProvider,
+          apiKey: candidate,
+          customBaseUrl: selectedProvider === 'custom' ? customBaseUrl : undefined,
+        });
+        if (directResult.ok) {
+          setFeedback({
+            tone: 'success',
+            text: `${providerConfig.name} key verified directly with provider.`,
+          });
+        } else {
+          setFeedback({
+            tone: 'error',
+            text: directResult.error || 'Provider rejected this key.',
+          });
+        }
+        return;
+      }
+
       const data = (await resp.json()) as { ok?: boolean; message?: string; error?: string };
       if (data.ok) {
         setFeedback({
@@ -157,10 +182,22 @@ export function ApiKeyModal({
         });
       }
     } catch {
-      setFeedback({
-        tone: 'error',
-        text: 'Could not reach verification endpoint. Check your connection.',
+      const directResult = await verifyProviderKeyDirect({
+        provider: selectedProvider,
+        apiKey: candidate,
+        customBaseUrl: selectedProvider === 'custom' ? customBaseUrl : undefined,
       });
+      if (directResult.ok) {
+        setFeedback({
+          tone: 'success',
+          text: `${providerConfig.name} key verified directly with provider.`,
+        });
+      } else {
+        setFeedback({
+          tone: 'error',
+          text: directResult.error || 'Could not reach verification endpoint. Check your connection.',
+        });
+      }
     } finally {
       setIsVerifying(false);
     }

@@ -1,15 +1,20 @@
 {
-  "name": "react-example",
+  "name": "kurukshetra",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "tsx server.ts",
     "start": "node server.ts",
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "tsx --test src/lib/playground.test.ts",
+    "deploy:firebase": "npm run build && firebase deploy --only hosting"
   },
   "dependencies": {
     "@google/genai": "^3.6.1",

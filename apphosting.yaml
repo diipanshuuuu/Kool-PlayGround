@@ -1,0 +1,24 @@
+# Firebase App Hosting configuration (optional full-stack Node.js deployment)
+# Connect your GitHub repository in Firebase Console -> App Hosting to deploy
+# both the React frontend and the Express /api/* backend automatically.
+# Docs: https://firebase.google.com/docs/app-hosting/configure
+
+runConfig:
+  minInstances: 0
+  maxInstances: 4
+  concurrency: 80
+  cpu: 1
+  memoryMiB: 512
+
+env:
+  - variable: NODE_ENV
+    value: production
+    availability:
+      - RUNTIME
+  # Optional: enable the Built-in Sandbox route by setting GEMINI_API_KEY in Cloud Secret Manager:
+  #   firebase apphosting:secrets:set GEMINI_API_KEY
+  # Then uncomment the lines below:
+  # - variable: GEMINI_API_KEY
+  #   secret: GEMINI_API_KEY
+  #   availability:
+  #     - RUNTIME

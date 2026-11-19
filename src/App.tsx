@@ -43,8 +43,13 @@ import {
 } from './lib/sessionsStorage';
 import { estimateTokens, parseAppSseLine } from './lib/streamParser';
 import { classifyPromptShotType } from './lib/promptAnalysis';
+import {
+  isStaticFallbackResponse,
+  streamDirectProviderChat,
+} from './lib/directClient';
 import type {
   ApiKeyStore,
+  AppSseEvent,
   ChatMessage,
   KeyStorageMode,
   PlaygroundParams,
@@ -249,7 +254,48 @@ export default function App() {
         totalTokens?: number;
       } = {};
 
+      const handleSseEvent = (event: AppSseEvent) => {
+        if (event.type === 'status' && event.status) {
+          setLiveStatus(event.status);
+        } else if (event.type === 'thinking' && event.text) {
+          if (ttftMs === undefined) ttftMs = performance.now() - startedAt;
+          accumulatedThinking += event.text;
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId ? { ...m, thinking: accumulatedThinking } : m
+            )
+          );
+        } else if (event.type === 'delta' && event.text) {
+          if (ttftMs === undefined) ttftMs = performance.now() - startedAt;
+          setLiveStatus(null);
+          accumulatedText += event.text;
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId ? { ...m, content: accumulatedText } : m
+            )
+          );
+        } else if (event.type === 'citations' && event.citations) {
+          collectedCitations = event.citations;
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId ? { ...m, citations: collectedCitations } : m
+            )
+          );
+        } else if (event.type === 'usage' && event.usage) {
+          usageStats = { ...usageStats, ...event.usage };
+        } else if (event.type === 'error') {
+          const errText = event.error || 'Provider returned an error.';
+          setMessages((prev) =>
+            prev.map((m) => (m.id === assistantId ? { ...m, error: errText } : m))
+          );
+        }
+      };
+
       try {
+        const cleanedMessages = conversationHistory
+          .filter((m) => !m.error && m.content.trim())
+          .map((m) => ({ role: m.role, content: m.content }));
+
         const endpoint =
           providerId === 'sandbox' ? '/api/sandbox/chat' : '/api/proxy/chat';
 
@@ -268,15 +314,42 @@ export default function App() {
             model: effectiveModel,
             customBaseUrl: providerId === 'custom' ? customBaseUrl : undefined,
             systemPrompt,
-            messages: conversationHistory
-              .filter((m) => !m.error && m.content.trim())
-              .map((m) => ({ role: m.role, content: m.content })),
+            messages: cleanedMessages,
             params: effectiveParams,
           }),
           signal: controller.signal,
         });
 
-        if (!response.ok) {
+        if (isStaticFallbackResponse(response)) {
+          if (providerId === 'sandbox') {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantId
+                  ? {
+                      ...m,
+                      error:
+                        'Built-in Sandbox requires the Node backend (local dev or Firebase App Hosting with GEMINI_API_KEY). Switch to Groq, OpenAI, Anthropic, or OpenRouter and paste your own API key to run directly on Firebase Hosting.',
+                    }
+                  : m
+              )
+            );
+            setIsStreaming(false);
+            setLiveStatus(null);
+            return;
+          }
+
+          await streamDirectProviderChat({
+            provider: providerId,
+            apiKey: activeKeyEntry?.key ?? '',
+            model: effectiveModel,
+            customBaseUrl: providerId === 'custom' ? customBaseUrl : undefined,
+            systemPrompt,
+            messages: cleanedMessages,
+            params: effectiveParams,
+            signal: controller.signal,
+            onEvent: handleSseEvent,
+          });
+        } else if (!response.ok) {
           let errMsg = `Request failed (${response.status})`;
           try {
             const data = (await response.json()) as { error?: string };
@@ -290,60 +363,26 @@ export default function App() {
           setIsStreaming(false);
           setLiveStatus(null);
           return;
-        }
+        } else {
+          const reader = response.body?.getReader();
+          if (!reader) {
+            throw new Error('Response stream could not be read.');
+          }
 
-        const reader = response.body?.getReader();
-        if (!reader) {
-          throw new Error('Response stream could not be read.');
-        }
+          const decoder = new TextDecoder();
+          let buffer = '';
 
-        const decoder = new TextDecoder();
-        let buffer = '';
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() ?? '';
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() ?? '';
-
-          for (const line of lines) {
-            const event = parseAppSseLine(line);
-            if (!event) continue;
-
-            if (event.type === 'status' && event.status) {
-              setLiveStatus(event.status);
-            } else if (event.type === 'thinking' && event.text) {
-              if (ttftMs === undefined) ttftMs = performance.now() - startedAt;
-              accumulatedThinking += event.text;
-              setMessages((prev) =>
-                prev.map((m) =>
-                  m.id === assistantId ? { ...m, thinking: accumulatedThinking } : m
-                )
-              );
-            } else if (event.type === 'delta' && event.text) {
-              if (ttftMs === undefined) ttftMs = performance.now() - startedAt;
-              setLiveStatus(null);
-              accumulatedText += event.text;
-              setMessages((prev) =>
-                prev.map((m) =>
-                  m.id === assistantId ? { ...m, content: accumulatedText } : m
-                )
-              );
-            } else if (event.type === 'citations' && event.citations) {
-              collectedCitations = event.citations;
-              setMessages((prev) =>
-                prev.map((m) =>
-                  m.id === assistantId ? { ...m, citations: collectedCitations } : m
-                )
-              );
-            } else if (event.type === 'usage' && event.usage) {
-              usageStats = { ...usageStats, ...event.usage };
-            } else if (event.type === 'error') {
-              const errText = event.error || 'Provider returned an error.';
-              setMessages((prev) =>
-                prev.map((m) => (m.id === assistantId ? { ...m, error: errText } : m))
-              );
+            for (const line of lines) {
+              const event = parseAppSseLine(line);
+              if (!event) continue;
+              handleSseEvent(event);
             }
           }
         }
