@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -28,6 +29,7 @@ import type { ApiKeyStore, KeyStorageMode, ProviderId } from '../lib/types';
 
 interface ApiKeyModalProps {
   isOpen: boolean;
+  isInitialLaunch?: boolean;
   initialProvider: ProviderId;
   customBaseUrl: string;
   keys: ApiKeyStore;
@@ -36,12 +38,14 @@ interface ApiKeyModalProps {
   onRemoveKey: (provider: ProviderId) => void;
   onClearSessionKeys: () => void;
   onClearAllKeys: () => void;
+  onSwitchToSandbox?: () => void;
 }
 
 const BYOK_PROVIDERS = PROVIDERS.filter((p) => p.requiresKey);
 
 export function ApiKeyModal({
   isOpen,
+  isInitialLaunch = false,
   initialProvider,
   customBaseUrl,
   keys,
@@ -50,6 +54,7 @@ export function ApiKeyModal({
   onRemoveKey,
   onClearSessionKeys,
   onClearAllKeys,
+  onSwitchToSandbox,
 }: ApiKeyModalProps) {
   const defaultTab: ProviderId =
     initialProvider === 'sandbox' ? 'groq' : initialProvider;
@@ -84,8 +89,6 @@ export function ApiKeyModal({
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, onClose]);
-
-  if (!isOpen) return null;
 
   const providerConfig = getProviderById(selectedProvider);
   const existingEntry = keys[selectedProvider];
@@ -233,28 +236,56 @@ export function ApiKeyModal({
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4 backdrop-blur-[2px]"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="api-key-modal-title"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className="flex max-h-[90vh] w-full max-w-xl flex-col overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-xl dark:border-zinc-800 dark:bg-[#111215]">
+    <AnimatePresence>
+      {isOpen && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.16, ease: 'easeOut' }}
+          className={`fixed inset-0 z-50 flex items-center justify-center p-4 ${
+            isInitialLaunch
+              ? 'bg-[#FAFAFA]/95 backdrop-blur-md dark:bg-[#0B0C0E]/95'
+              : 'bg-black/45 backdrop-blur-[2px]'
+          }`}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="api-key-modal-title"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) onClose();
+          }}
+        >
+          <motion.div
+            initial={{ opacity: 0, scale: 0.97, y: 8 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.98, y: 4 }}
+            transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+            className="flex max-h-[90vh] w-full max-w-xl flex-col overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-xl dark:border-zinc-800 dark:bg-[#111215]"
+          >
         {/* Header */}
-        <div className="flex shrink-0 items-center justify-between border-b border-zinc-200 px-6 py-4 dark:border-zinc-800">
-          <div className="flex items-center gap-2.5">
-            <KeyRound className="h-4 w-4 text-[#E04F26] dark:text-[#F0643C]" />
-            <h2
-              id="api-key-modal-title"
-              className="font-display text-base font-semibold text-zinc-950 dark:text-zinc-50"
-            >
-              API Key Vault
-            </h2>
+        <div className="flex shrink-0 items-start justify-between gap-3 border-b border-zinc-200 px-6 py-4 dark:border-zinc-800">
+          <div className="min-w-0">
+            {isInitialLaunch && (
+              <p className="mb-1 font-display text-[11px] font-semibold tracking-wide text-[#E04F26] uppercase dark:text-[#F0643C]">
+                Kool PlayGround
+              </p>
+            )}
+            <div className="flex items-center gap-2.5">
+              <KeyRound className="h-4 w-4 shrink-0 text-[#E04F26] dark:text-[#F0643C]" />
+              <h2
+                id="api-key-modal-title"
+                className="font-display text-base font-semibold text-zinc-950 dark:text-zinc-50"
+              >
+                API Key Vault
+              </h2>
+            </div>
+            {isInitialLaunch && (
+              <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                Paste a provider key for this session or save it locally to enter the playground.
+              </p>
+            )}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-2">
             {counts.session > 0 && (
               <button
                 type="button"
@@ -558,24 +589,36 @@ export function ApiKeyModal({
           {/* Footer Actions */}
           <div className="flex flex-wrap items-center justify-between gap-3 border-t border-zinc-200 pt-4 dark:border-zinc-800">
             <div className="flex items-center gap-2">
-              {existingEntry && (
+              {isInitialLaunch && onSwitchToSandbox ? (
                 <button
                   type="button"
-                  onClick={handleRemoveCurrent}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-200 px-3 py-2 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                  onClick={onSwitchToSandbox}
+                  className="rounded-lg border border-zinc-200 px-3 py-2 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
                 >
-                  <Trash2 className="h-3.5 w-3.5" />
-                  <span>Clear {providerConfig.shortName} key</span>
+                  Try Built-in Sandbox
                 </button>
-              )}
-              {counts.total > 1 && (
-                <button
-                  type="button"
-                  onClick={handleClearAll}
-                  className="rounded-lg px-2.5 py-2 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40"
-                >
-                  Clear all keys
-                </button>
+              ) : (
+                <>
+                  {existingEntry && (
+                    <button
+                      type="button"
+                      onClick={handleRemoveCurrent}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-200 px-3 py-2 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      <span>Clear {providerConfig.shortName} key</span>
+                    </button>
+                  )}
+                  {counts.total > 1 && (
+                    <button
+                      type="button"
+                      onClick={handleClearAll}
+                      className="rounded-lg px-2.5 py-2 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40"
+                    >
+                      Clear all keys
+                    </button>
+                  )}
+                </>
               )}
             </div>
 
@@ -585,18 +628,20 @@ export function ApiKeyModal({
                 onClick={onClose}
                 className="rounded-lg px-3.5 py-2 text-xs font-medium text-zinc-600 transition-colors hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
               >
-                Done
+                {isInitialLaunch ? 'Skip to playground' : 'Done'}
               </button>
               <button
                 type="submit"
-                className="rounded-lg bg-[#E04F26] px-4 py-2 text-xs font-medium text-white transition-colors hover:bg-[#C8401B] focus-visible:ring-2 focus-visible:ring-[#E04F26]/40 focus-visible:outline-none dark:bg-[#F0643C] dark:hover:bg-[#E04F26]"
+                className="rounded-lg bg-[#E04F26] px-4 py-2 text-xs font-medium text-white transition-all duration-150 hover:bg-[#C8401B] active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-[#E04F26]/40 focus-visible:outline-none dark:bg-[#F0643C] dark:hover:bg-[#E04F26]"
               >
                 {storageMode === 'session' ? 'Use for session' : 'Save key locally'}
               </button>
             </div>
           </div>
         </form>
-      </div>
-    </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }

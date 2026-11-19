@@ -202,3 +202,33 @@ export function maskApiKey(key: string): string {
   return `${trimmed.slice(0, 4)}••••${trimmed.slice(-4)}`;
 }
 
+/**
+ * Returns true when no persisted API keys exist on initial load,
+ * signaling the app to launch directly into the API Key Vault.
+ */
+export function shouldLaunchToVault(keys: ApiKeyStore): boolean {
+  return countConfiguredKeys(keys).total === 0;
+}
+
+const INITIAL_PROVIDER_ORDER: ProviderId[] = [
+  'groq',
+  'openai',
+  'anthropic',
+  'openrouter',
+  'custom',
+];
+
+/**
+ * Picks the best starting provider based on saved keys:
+ * prefers Groq if configured, otherwise the first provider with a saved key,
+ * falling back to Groq when none are saved yet.
+ */
+export function resolveInitialProvider(keys: ApiKeyStore): ProviderId {
+  for (const pid of INITIAL_PROVIDER_ORDER) {
+    if (keys[pid]?.key?.trim()) {
+      return pid;
+    }
+  }
+  return 'groq';
+}
+

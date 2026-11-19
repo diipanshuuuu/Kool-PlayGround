@@ -107,6 +107,15 @@ export interface SavedSession {
   updatedAt: number;
 }
 
+export interface SavedSystemPrompt {
+  id: string;
+  title: string;
+  category: string;
+  content: string;
+  updatedAt: number;
+  isBuiltIn?: boolean;
+}
+
 export interface AppSseEvent {
   type: 'status' | 'delta' | 'thinking' | 'citations' | 'usage' | 'done' | 'error';
   text?: string;

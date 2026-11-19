@@ -191,3 +191,124 @@ completion = client.chat.completions.create(
   }
 )`;
 }
+
+export interface MarkdownExportOptions {
+  providerId: ProviderId;
+  modelId: string;
+  systemPrompt: string;
+  messages: ChatMessage[];
+  params: PlaygroundParams;
+  exportedAt?: Date;
+}
+
+export function buildMarkdownFilename(
+  messages: ChatMessage[],
+  systemPrompt: string
+): string {
+  const firstUser = messages.find((m) => m.role === 'user' && m.content.trim());
+  const source = firstUser?.content.trim() || systemPrompt.trim();
+  if (!source) return 'kool-playground-conversation.md';
+  const slug = source
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48)
+    .replace(/-+$/, '');
+  return slug ? `kool-playground-${slug}.md` : 'kool-playground-conversation.md';
+}
+
+export function formatConversationMarkdown(opts: MarkdownExportOptions): string {
+  const provider = getProviderById(opts.providerId);
+  const exportedDate = (opts.exportedAt ?? new Date()).toISOString();
+  const firstUser = opts.messages.find((m) => m.role === 'user' && m.content.trim());
+  const rawTitle = firstUser
+    ? firstUser.content.trim().split(/\r?\n/)[0].replace(/^#+\s*/, '').trim()
+    : '';
+  const title = rawTitle
+    ? rawTitle.length > 72
+      ? `${rawTitle.slice(0, 72).trimEnd()}…`
+      : rawTitle
+    : 'Kool PlayGround Conversation';
+
+  const lines: string[] = [];
+  lines.push(`# ${title}`);
+  lines.push('');
+  lines.push(`- **Provider:** ${provider.name}`);
+  lines.push(`- **Model:** \`${opts.modelId}\``);
+
+  const paramBits = [
+    `temperature=${opts.params.temperature}`,
+    `top_p=${opts.params.topP}`,
+    `max_tokens=${opts.params.maxTokens}`,
+  ];
+  if (opts.params.browserSearch) paramBits.push('browser_search=on');
+  if (opts.params.jsonMode) paramBits.push('json_mode=on');
+  lines.push(`- **Parameters:** \`${paramBits.join(' · ')}\``);
+  lines.push(`- **Exported:** ${exportedDate}`);
+
+  if (opts.systemPrompt.trim()) {
+    lines.push('');
+    lines.push('## System Prompt');
+    lines.push('');
+    lines.push(opts.systemPrompt.trim());
+  }
+
+  lines.push('');
+  lines.push('---');
+
+  const exportable = opts.messages.filter(
+    (m) => m.content.trim() || m.thinking?.trim() || m.error?.trim()
+  );
+
+  if (exportable.length === 0) {
+    lines.push('');
+    lines.push('*No messages in this conversation yet.*');
+    lines.push('');
+    return lines.join('\n');
+  }
+
+  for (const msg of exportable) {
+    lines.push('');
+    if (msg.role === 'user') {
+      lines.push('## User');
+      lines.push('');
+      lines.push(msg.content.trim());
+    } else {
+      const modelStamp = msg.modelUsed ? ` (${msg.modelUsed})` : '';
+      lines.push(`## Assistant${modelStamp}`);
+      lines.push('');
+
+      if (msg.thinking?.trim()) {
+        lines.push('<details>');
+        lines.push('<summary>Reasoning trace</summary>');
+        lines.push('');
+        lines.push(msg.thinking.trim());
+        lines.push('');
+        lines.push('</details>');
+        lines.push('');
+      }
+
+      if (msg.content.trim()) {
+        lines.push(msg.content.trim());
+      }
+
+      if (msg.error?.trim()) {
+        lines.push('');
+        lines.push(`> **Error:** ${msg.error.trim()}`);
+      }
+
+      if (msg.citations && msg.citations.length > 0) {
+        lines.push('');
+        lines.push('### Sources');
+        lines.push('');
+        msg.citations.forEach((cite, idx) => {
+          const safeTitle = (cite.title || cite.url).replace(/[\[\]]/g, '');
+          lines.push(`${idx + 1}. [${safeTitle}](${cite.url})`);
+        });
+      }
+    }
+  }
+
+  lines.push('');
+  return lines.join('\n');
+}

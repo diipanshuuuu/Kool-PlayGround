@@ -195,7 +195,7 @@ export function buildDirectProviderRequest(args: {
     if (typeof window !== 'undefined' && window.location?.origin) {
       headers['HTTP-Referer'] = window.location.origin;
     }
-    headers['X-Title'] = 'Kurukshetra Playground';
+    headers['X-Title'] = 'Kool PlayGround';
   }
 
   return {
@@ -243,7 +243,7 @@ export async function verifyProviderKeyDirect(args: {
       if (typeof window !== 'undefined' && window.location?.origin) {
         headers['HTTP-Referer'] = window.location.origin;
       }
-      headers['X-Title'] = 'Kurukshetra Playground';
+      headers['X-Title'] = 'Kool PlayGround';
     }
 
     const resp = await fetch(`${baseUrl}/models`, { method: 'GET', headers });

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
 import {
   ChevronDown,
   ChevronRight,
@@ -274,18 +275,24 @@ export function ParametersPanel({
             >
               Provider
             </label>
-            <select
-              id="provider-select"
-              value={providerId}
-              onChange={(e) => onProviderChange(e.target.value as ProviderId)}
-              className="w-full rounded-lg border border-zinc-200 bg-white px-2.5 py-2 text-xs font-medium text-zinc-900 focus:border-[#E04F26] focus:outline-none dark:border-zinc-700 dark:bg-[#181A1F] dark:text-zinc-100 dark:focus:border-[#F0643C]"
-            >
-              {PROVIDERS.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
+            <div className="group relative">
+              <select
+                id="provider-select"
+                value={providerId}
+                onChange={(e) => onProviderChange(e.target.value as ProviderId)}
+                className="w-full cursor-pointer appearance-none rounded-lg border border-zinc-200 bg-white py-2 pr-8 pl-2.5 text-xs font-medium text-zinc-900 transition-colors hover:border-zinc-300 focus:border-[#E04F26] focus:outline-none dark:border-zinc-700 dark:bg-[#181A1F] dark:text-zinc-100 dark:hover:border-zinc-600 dark:focus:border-[#F0643C]"
+              >
+                {PROVIDERS.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown
+                aria-hidden="true"
+                className="pointer-events-none absolute top-1/2 right-2.5 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400 transition-colors group-hover:text-zinc-600 dark:text-zinc-500 dark:group-hover:text-zinc-300"
+              />
+            </div>
           </div>
 
           {providerId !== 'custom' && (
@@ -303,18 +310,24 @@ export function ParametersPanel({
                   </span>
                 )}
               </div>
-              <select
-                id="model-select"
-                value={modelId}
-                onChange={(e) => onModelChange(e.target.value)}
-                className="w-full rounded-lg border border-zinc-200 bg-white px-2.5 py-2 font-mono text-xs text-zinc-900 focus:border-[#E04F26] focus:outline-none dark:border-zinc-700 dark:bg-[#181A1F] dark:text-zinc-100 dark:focus:border-[#F0643C]"
-              >
-                {provider.models.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.label}
-                  </option>
-                ))}
-              </select>
+              <div className="group relative">
+                <select
+                  id="model-select"
+                  value={modelId}
+                  onChange={(e) => onModelChange(e.target.value)}
+                  className="w-full cursor-pointer appearance-none rounded-lg border border-zinc-200 bg-white py-2 pr-8 pl-2.5 font-mono text-xs text-zinc-900 transition-colors hover:border-zinc-300 focus:border-[#E04F26] focus:outline-none dark:border-zinc-700 dark:bg-[#181A1F] dark:text-zinc-100 dark:hover:border-zinc-600 dark:focus:border-[#F0643C]"
+                >
+                  {provider.models.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.label}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown
+                  aria-hidden="true"
+                  className="pointer-events-none absolute top-1/2 right-2.5 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400 transition-colors group-hover:text-zinc-600 dark:text-zinc-500 dark:group-hover:text-zinc-300"
+                />
+              </div>
             </div>
           )}
 
@@ -513,15 +526,23 @@ export function ParametersPanel({
               className="flex w-full items-center justify-between py-1 text-xs font-medium text-zinc-600 transition-colors hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-100"
             >
               <span>Advanced</span>
-              {showAdvanced ? (
-                <ChevronDown className="h-3.5 w-3.5" />
-              ) : (
-                <ChevronRight className="h-3.5 w-3.5" />
-              )}
+              <ChevronRight
+                className={`h-3.5 w-3.5 transition-transform duration-150 ${
+                  showAdvanced ? 'rotate-90' : 'rotate-0'
+                }`}
+              />
             </button>
 
-            {showAdvanced && (
-              <div className="mt-3 space-y-4">
+            <AnimatePresence initial={false}>
+              {showAdvanced && (
+                <motion.div
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+                  className="overflow-hidden"
+                >
+                  <div className="mt-3 space-y-4">
                 <SliderControl
                   id="param-frequency-penalty"
                   label="Frequency penalty"
@@ -623,8 +644,10 @@ export function ParametersPanel({
                     </div>
                   )}
                 </div>
-              </div>
-            )}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
         </section>
 
@@ -716,28 +739,40 @@ export function ParametersPanel({
       {isOpenDesktop && (
         <aside
           aria-label="Model parameters"
-          className="hidden w-[308px] shrink-0 border-l border-zinc-200 dark:border-zinc-800 lg:block"
+          className="hidden w-[280px] shrink-0 border-l border-zinc-200 dark:border-zinc-800 lg:block xl:w-[312px] 2xl:w-[340px]"
         >
           {panelContent}
         </aside>
       )}
 
       {/* Mobile / Tablet Slide-over Drawer */}
-      {isOpenMobile && (
-        <div
-          className="fixed inset-0 z-40 flex justify-end bg-black/40 backdrop-blur-[1px] lg:hidden"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Model parameters drawer"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) onCloseMobile();
-          }}
-        >
-          <div className="h-full w-[308px] max-w-[88vw] border-l border-zinc-200 shadow-2xl dark:border-zinc-800">
-            {panelContent}
-          </div>
-        </div>
-      )}
+      <AnimatePresence>
+        {isOpenMobile && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.16, ease: 'easeOut' }}
+            className="fixed inset-0 z-40 flex justify-end bg-black/40 backdrop-blur-[1px] lg:hidden"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Model parameters drawer"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) onCloseMobile();
+            }}
+          >
+            <motion.div
+              initial={{ x: '100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '100%' }}
+              transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+              className="h-full w-[308px] max-w-[88vw] border-l border-zinc-200 shadow-2xl dark:border-zinc-800"
+            >
+              {panelContent}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </>
   );
 }

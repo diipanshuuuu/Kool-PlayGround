@@ -1,4 +1,4 @@
-# Kurukshetra
+# Kool PlayGround
 
 A minimal, distraction-free, bring-your-own-key (BYOK) LLM playground inspired by Groq Playground. Test prompts across multiple model providers with full sampling controls, live prompt shot-type detection, web search grounding, and client-only API key management.
 
@@ -81,7 +81,7 @@ This repository is pre-configured so you can clone it from GitHub and deploy str
 
 ### Option 1: Firebase Hosting (Static — Free Spark Plan)
 
-Best for instant, zero-cost deployment. When hosted statically on Firebase Hosting, Kurukshetra automatically switches BYOK requests (**Groq**, **OpenAI**, **Anthropic**, **OpenRouter**, and CORS-enabled **Custom** endpoints) to direct browser-to-provider API calls—including key verification, streaming, sampling controls, JSON mode, and native Groq web search (`openai/gpt-oss-*` / `groq/compound*`).
+Best for instant, zero-cost deployment. When hosted statically on Firebase Hosting, Kool PlayGround automatically switches BYOK requests (**Groq**, **OpenAI**, **Anthropic**, **OpenRouter**, and CORS-enabled **Custom** endpoints) to direct browser-to-provider API calls—including key verification, streaming, sampling controls, JSON mode, and native Groq web search (`openai/gpt-oss-*` / `groq/compound*`).
 
 ```bash
 git clone <your-repo-url>

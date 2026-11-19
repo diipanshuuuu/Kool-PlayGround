@@ -8,7 +8,9 @@ import {
   loadPersistedKeys,
   maskApiKey,
   removeProviderKey,
+  resolveInitialProvider,
   setProviderKey,
+  shouldLaunchToVault,
   validateKeyFormatHint,
   type StorageLike,
 } from './keyStorage';
@@ -22,6 +24,8 @@ import {
   validateRequestConfig,
 } from './providers';
 import {
+  countWords,
+  estimateAssistantResponseStats,
   estimateTokens,
   formatElapsedMs,
   formatProviderError,
@@ -30,7 +34,11 @@ import {
   parseAppSseLine,
   parseOpenAISseLine,
 } from './streamParser';
-import { generateCodeSnippet } from './codeGen';
+import {
+  buildMarkdownFilename,
+  formatConversationMarkdown,
+  generateCodeSnippet,
+} from './codeGen';
 import {
   deleteSessionFromStorage,
   deriveSessionTitle,
@@ -43,6 +51,19 @@ import {
   isStaticFallbackResponse,
   resolveDirectProviderBaseUrl,
 } from './directClient';
+import {
+  formatShortcutHint,
+  isApplePlatform,
+  matchGlobalShortcut,
+} from './shortcuts';
+import {
+  BUILT_IN_SYSTEM_PROMPTS,
+  deleteSavedPrompt,
+  derivePromptTitle,
+  filterPromptLibrary,
+  loadPromptLibrary,
+  upsertSavedPrompt,
+} from './promptLibraryStorage';
 
 function createMemoryStorage(): StorageLike {
   const data = new Map<string, string>();
@@ -174,6 +195,10 @@ test('SSE parsers extract deltas, reasoning, usage, and termination cleanly', ()
   assert.equal(formatElapsedMs(1540), '1.54s');
   assert.equal(formatTokensPerSec(120, 1000), '120 tok/s');
   assert.equal(estimateTokens('12345678'), 2);
+  assert.equal(countWords(''), 0);
+  assert.equal(countWords('   \n\t  '), 0);
+  assert.equal(countWords('hello'), 1);
+  assert.equal(countWords('Explain TCP vs UDP\nin   three bullets.'), 7);
 });
 
 test('generateCodeSnippet outputs accurate provider snippets without leaking raw API keys', () => {
@@ -414,6 +439,241 @@ test('directClient detects static Firebase Hosting HTML fallback and builds vali
   assert.equal(resolveDirectProviderBaseUrl('custom', 'ftp://bad.example'), null);
 });
 
+test('matchGlobalShortcut handles Cmd/Ctrl+Enter, Cmd/Ctrl+K, and Cmd/Ctrl+N with modal and modifier guards', () => {
+  const base = { metaKey: false, ctrlKey: false, altKey: false, shiftKey: false };
 
+  // Cmd/Ctrl + Enter sends prompt globally when no modal is open
+  assert.equal(
+    matchGlobalShortcut({ ...base, key: 'Enter', metaKey: true }, { hasOpenModal: false }),
+    'send-prompt'
+  );
+  assert.equal(
+    matchGlobalShortcut({ ...base, key: 'Enter', ctrlKey: true }, { hasOpenModal: false }),
+    'send-prompt'
+  );
+  // Suppressed while a modal is open
+  assert.equal(
+    matchGlobalShortcut({ ...base, key: 'Enter', metaKey: true }, { hasOpenModal: true }),
+    null
+  );
 
+  // Cmd/Ctrl + K opens key settings (case-insensitive, even if another modal is open)
+  assert.equal(
+    matchGlobalShortcut({ ...base, key: 'k', metaKey: true }, { hasOpenModal: false }),
+    'open-keys'
+  );
+  assert.equal(
+    matchGlobalShortcut({ ...base, key: 'K', ctrlKey: true }, { hasOpenModal: true }),
+    'open-keys'
+  );
 
+  // Cmd/Ctrl + N starts a new chat
+  assert.equal(
+    matchGlobalShortcut({ ...base, key: 'n', metaKey: true }, { hasOpenModal: false }),
+    'new-chat'
+  );
+  assert.equal(
+    matchGlobalShortcut({ ...base, key: 'N', ctrlKey: true }, { hasOpenModal: true }),
+    'new-chat'
+  );
+
+  // Guards: ignore plain keys, Shift/Alt combos, IME composition, or already-prevented events
+  assert.equal(matchGlobalShortcut({ ...base, key: 'Enter' }, { hasOpenModal: false }), null);
+  assert.equal(
+    matchGlobalShortcut({ ...base, key: 'k', metaKey: true, shiftKey: true }, { hasOpenModal: false }),
+    null
+  );
+  assert.equal(
+    matchGlobalShortcut({ ...base, key: 'n', ctrlKey: true, altKey: true }, { hasOpenModal: false }),
+    null
+  );
+  assert.equal(
+    matchGlobalShortcut({ ...base, key: 'k', metaKey: true, isComposing: true }, { hasOpenModal: false }),
+    null
+  );
+  assert.equal(
+    matchGlobalShortcut({ ...base, key: 'Enter', ctrlKey: true, defaultPrevented: true }, { hasOpenModal: false }),
+    null
+  );
+
+  assert.equal(isApplePlatform('MacIntel'), true);
+  assert.equal(isApplePlatform('Win32'), false);
+  assert.equal(formatShortcutHint('K', 'MacIntel'), '⌘K');
+  assert.equal(formatShortcutHint('K', 'Linux x86_64'), 'Ctrl+K');
+});
+
+test('promptLibraryStorage saves, updates, filters, derives titles, and deletes system prompts cleanly', () => {
+  const storage = createMemoryStorage();
+  assert.deepEqual(loadPromptLibrary(storage), []);
+
+  assert.equal(derivePromptTitle('# You are a SQL optimizer.\nBe concise.'), 'You are a SQL optimizer.');
+  assert.equal(derivePromptTitle('   '), 'Untitled system prompt');
+
+  let library = upsertSavedPrompt(
+    [],
+    {
+      id: 'p-1',
+      title: 'SQL Optimizer',
+      category: 'Coding',
+      content: 'Optimize PostgreSQL queries and explain index usage.',
+      updatedAt: 1000,
+    },
+    storage
+  );
+  library = upsertSavedPrompt(
+    library,
+    {
+      id: 'p-2',
+      title: 'Release Notes Writer',
+      category: 'Writing',
+      content: 'Summarize PR diffs into crisp user-facing release notes.',
+      updatedAt: 2000,
+    },
+    storage
+  );
+
+  // Reload from storage verifies persistence & recency ordering
+  const reloaded = loadPromptLibrary(storage);
+  assert.equal(reloaded.length, 2);
+  assert.equal(reloaded[0].id, 'p-2');
+  assert.equal(reloaded[1].id, 'p-1');
+
+  // Updating existing ID replaces cleanly without duplicating
+  const updated = upsertSavedPrompt(
+    reloaded,
+    {
+      id: 'p-1',
+      title: 'Postgres Query Reviewer',
+      category: 'Coding',
+      content: 'Review queries for missing indexes and seq scans.',
+      updatedAt: 3000,
+    },
+    storage
+  );
+  assert.equal(updated.length, 2);
+  assert.equal(updated[0].title, 'Postgres Query Reviewer');
+
+  // Filtering combines user prompts + built-in templates cleanly
+  const combined = [...updated, ...BUILT_IN_SYSTEM_PROMPTS];
+  assert.equal(filterPromptLibrary(combined, '', 'Saved').length, 2);
+  assert.equal(filterPromptLibrary(combined, 'postgres', 'All').length, 1);
+  assert.ok(filterPromptLibrary(combined, '', 'Coding').length >= 2);
+
+  // Deleting removes from both state and storage
+  const afterDelete = deleteSavedPrompt(updated, 'p-1', storage);
+  assert.equal(afterDelete.length, 1);
+  assert.equal(loadPromptLibrary(storage).length, 1);
+});
+
+test('formatConversationMarkdown and buildMarkdownFilename preserve conversation formatting, reasoning, and citations', () => {
+  const fixedDate = new Date('2026-11-20T01:30:00.000Z');
+
+  // Empty conversation fallback
+  assert.equal(buildMarkdownFilename([], ''), 'kool-playground-conversation.md');
+  const emptyMd = formatConversationMarkdown({
+    providerId: 'groq',
+    modelId: 'llama-3.3-70b-versatile',
+    systemPrompt: '',
+    messages: [],
+    params: DEFAULT_PLAYGROUND_PARAMS,
+    exportedAt: fixedDate,
+  });
+  assert.match(emptyMd, /^# Kool PlayGround Conversation/m);
+  assert.match(emptyMd, /\*No messages in this conversation yet\.\*/);
+  assert.match(emptyMd, /2026-11-20T01:30:00\.000Z/);
+
+  // Multi-turn formatted conversation with system prompt, reasoning trace, code fence, and citations
+  const messages = [
+    {
+      id: 'u-1',
+      role: 'user' as const,
+      content: 'Compare Rust vs Go for high-throughput HTTP proxies?',
+      createdAt: 1000,
+    },
+    {
+      id: 'a-1',
+      role: 'assistant' as const,
+      modelUsed: 'openai/gpt-oss-120b',
+      thinking: 'Consider memory overhead, GC pauses, and async ecosystem.',
+      content: 'Here is a summary:\n\n```rust\nasync fn proxy() {}\n```\n\n- **Rust**: zero GC pauses\n- **Go**: fast compilation',
+      citations: [
+        { title: 'Tokio Docs', url: 'https://tokio.rs' },
+        { title: 'Go net/http', url: 'https://pkg.go.dev/net/http' },
+      ],
+      createdAt: 2000,
+    },
+  ];
+
+  assert.equal(
+    buildMarkdownFilename(messages, 'Be concise.'),
+    'kool-playground-compare-rust-vs-go-for-high-throughput-http-prox.md'
+  );
+
+  const md = formatConversationMarkdown({
+    providerId: 'groq',
+    modelId: 'openai/gpt-oss-120b',
+    systemPrompt: 'Respond with crisp engineering trade-offs.',
+    messages,
+    params: {
+      ...DEFAULT_PLAYGROUND_PARAMS,
+      temperature: 0.4,
+      browserSearch: true,
+    },
+    exportedAt: fixedDate,
+  });
+
+  assert.match(md, /^# Compare Rust vs Go for high-throughput HTTP proxies\?/m);
+  assert.match(md, /- \*\*Provider:\*\* Groq/);
+  assert.match(md, /- \*\*Model:\*\* `openai\/gpt-oss-120b`/);
+  assert.match(md, /browser_search=on/);
+  assert.match(md, /## System Prompt\n\nRespond with crisp engineering trade-offs\./);
+  assert.match(md, /## User\n\nCompare Rust vs Go for high-throughput HTTP proxies\?/);
+  assert.match(md, /## Assistant \(openai\/gpt-oss-120b\)/);
+  assert.match(md, /<details>\n<summary>Reasoning trace<\/summary>\n\nConsider memory overhead/);
+  assert.match(md, /```rust\nasync fn proxy\(\) \{\}\n```/);
+  assert.match(md, /### Sources\n\n1\. \[Tokio Docs\]\(https:\/\/tokio\.rs\)\n2\. \[Go net\/http\]\(https:\/\/pkg\.go\.dev\/net\/http\)/);
+});
+
+test('estimateAssistantResponseStats estimates response tokens, words, and optional reasoning tokens cleanly', () => {
+  const empty = estimateAssistantResponseStats('   ');
+  assert.equal(empty.tokens, 0);
+  assert.equal(empty.words, 0);
+  assert.equal(empty.totalEstimatedTokens, 0);
+  assert.equal(empty.label, '~0 tok · 0 words');
+
+  const singleWord = estimateAssistantResponseStats('Hello');
+  assert.equal(singleWord.words, 1);
+  assert.equal(singleWord.tokens, 2);
+  assert.equal(singleWord.label, '~2 tok · 1 word');
+  assert.equal(singleWord.tooltip, 'Estimated ~2 response tokens (1 word)');
+
+  const withReasoning = estimateAssistantResponseStats(
+    'SQLite in WAL mode handles concurrent reads cleanly with minimal operational overhead.',
+    'Compare WAL concurrency vs Postgres MVCC.'
+  );
+  assert.equal(withReasoning.words, 12);
+  assert.equal(withReasoning.tokens, estimateTokens('SQLite in WAL mode handles concurrent reads cleanly with minimal operational overhead.'));
+  assert.equal(withReasoning.thinkingTokens, estimateTokens('Compare WAL concurrency vs Postgres MVCC.'));
+  assert.equal(withReasoning.totalEstimatedTokens, withReasoning.tokens + withReasoning.thinkingTokens);
+  assert.match(withReasoning.label, /^~\d+ tok · 12 words$/);
+  assert.match(withReasoning.tooltip, /reasoning tokens \(12 words\)$/);
+});
+
+test('shouldLaunchToVault and resolveInitialProvider direct users based on saved API keys', () => {
+  const storage = createMemoryStorage();
+  const emptyKeys = loadPersistedKeys(storage);
+  assert.equal(shouldLaunchToVault(emptyKeys), true);
+  assert.equal(resolveInitialProvider(emptyKeys), 'groq');
+
+  // Saving an OpenAI key skips vault on next load and auto-selects OpenAI
+  setProviderKey({}, 'openai', 'sk-saved-openai-key', 'local', storage);
+  const reloadedOpenAI = loadPersistedKeys(storage);
+  assert.equal(shouldLaunchToVault(reloadedOpenAI), false);
+  assert.equal(resolveInitialProvider(reloadedOpenAI), 'openai');
+
+  // If Groq is also saved, Groq takes priority as default
+  setProviderKey(reloadedOpenAI, 'groq', 'gsk_saved_groq_key', 'local', storage);
+  const reloadedBoth = loadPersistedKeys(storage);
+  assert.equal(shouldLaunchToVault(reloadedBoth), false);
+  assert.equal(resolveInitialProvider(reloadedBoth), 'groq');
+});

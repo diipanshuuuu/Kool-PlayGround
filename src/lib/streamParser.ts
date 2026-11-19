@@ -143,6 +143,46 @@ export function estimateTokens(text: string): number {
   return Math.max(1, Math.ceil(cleaned.length / 4));
 }
 
+export function countWords(text: string): number {
+  const cleaned = text.trim();
+  if (!cleaned) return 0;
+  return cleaned.split(/\s+/).length;
+}
+
+export interface AssistantResponseStats {
+  tokens: number;
+  words: number;
+  thinkingTokens: number;
+  totalEstimatedTokens: number;
+  label: string;
+  tooltip: string;
+}
+
+export function estimateAssistantResponseStats(
+  content: string,
+  thinking?: string
+): AssistantResponseStats {
+  const tokens = estimateTokens(content);
+  const words = countWords(content);
+  const thinkingTokens = thinking ? estimateTokens(thinking) : 0;
+  const totalEstimatedTokens = tokens + thinkingTokens;
+  const wordUnit = words === 1 ? 'word' : 'words';
+  const label = `~${tokens} tok · ${words} ${wordUnit}`;
+  const tooltip =
+    thinkingTokens > 0
+      ? `Estimated ~${tokens} response tokens + ~${thinkingTokens} reasoning tokens (${words} ${wordUnit})`
+      : `Estimated ~${tokens} response tokens (${words} ${wordUnit})`;
+
+  return {
+    tokens,
+    words,
+    thinkingTokens,
+    totalEstimatedTokens,
+    label,
+    tooltip,
+  };
+}
+
 export function formatElapsedMs(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return '0.00s';
   if (ms < 1000) return `${Math.round(ms)}ms`;

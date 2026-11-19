@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AnimatePresence, MotionConfig, motion } from 'motion/react';
 import {
   AlertCircle,
   ArrowUp,
   Bookmark,
+  BookMarked,
   Braces,
-  ChevronDown,
   ChevronRight,
   Globe,
   KeyRound,
   LogOut,
   Moon,
+  Plus,
   SlidersHorizontal,
   Square,
   Sun,
@@ -18,6 +20,7 @@ import { ApiKeyModal } from './components/ApiKeyModal';
 import { CodeExportModal } from './components/CodeExportModal';
 import { MessageList } from './components/MessageList';
 import { ParametersPanel } from './components/ParametersPanel';
+import { PromptLibraryDrawer } from './components/PromptLibraryDrawer';
 import { SessionsModal } from './components/SessionsModal';
 import {
   clearAllProviderKeys,
@@ -26,7 +29,9 @@ import {
   loadPersistedKeys,
   maskApiKey,
   removeProviderKey,
+  resolveInitialProvider,
   setProviderKey,
+  shouldLaunchToVault,
 } from './lib/keyStorage';
 import {
   DEFAULT_PLAYGROUND_PARAMS,
@@ -41,12 +46,18 @@ import {
   loadSavedSessions,
   saveSessionToStorage,
 } from './lib/sessionsStorage';
-import { estimateTokens, parseAppSseLine } from './lib/streamParser';
+import { countWords, estimateTokens, parseAppSseLine } from './lib/streamParser';
 import { classifyPromptShotType } from './lib/promptAnalysis';
 import {
   isStaticFallbackResponse,
   streamDirectProviderChat,
 } from './lib/directClient';
+import {
+  deleteSavedPrompt,
+  loadPromptLibrary,
+  upsertSavedPrompt,
+} from './lib/promptLibraryStorage';
+import { formatShortcutHint, matchGlobalShortcut } from './lib/shortcuts';
 import type {
   ApiKeyStore,
   AppSseEvent,
@@ -55,6 +66,7 @@ import type {
   PlaygroundParams,
   ProviderId,
   SavedSession,
+  SavedSystemPrompt,
   SearchCitation,
 } from './lib/types';
 
@@ -93,9 +105,13 @@ export default function App() {
   // API keys: loads ONLY explicitly saved localStorage keys; session keys live strictly in React memory
   const [apiKeys, setApiKeys] = useState<ApiKeyStore>(() => loadPersistedKeys());
 
-  // Provider, model, and parameter state
-  const [providerId, setProviderId] = useState<ProviderId>('groq');
-  const [modelId, setModelId] = useState<string>(() => getDefaultModelForProvider('groq'));
+  // Provider, model, and parameter state (auto-selects first saved provider if keys exist)
+  const [providerId, setProviderId] = useState<ProviderId>(() =>
+    resolveInitialProvider(loadPersistedKeys())
+  );
+  const [modelId, setModelId] = useState<string>(() =>
+    getDefaultModelForProvider(resolveInitialProvider(loadPersistedKeys()))
+  );
   const [customBaseUrl, setCustomBaseUrl] = useState<string>('https://api.together.xyz/v1');
   const [customModelId, setCustomModelId] = useState<string>('');
   const [params, setParams] = useState<PlaygroundParams>(DEFAULT_PLAYGROUND_PARAMS);
@@ -114,15 +130,23 @@ export default function App() {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
 
-  // Layout & Modal state
+  // Layout & Modal state — open API Key Vault on initial load when no saved keys exist
   const [isParamsOpenDesktop, setIsParamsOpenDesktop] = useState<boolean>(true);
   const [isParamsOpenMobile, setIsParamsOpenMobile] = useState<boolean>(false);
-  const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState<boolean>(false);
+  const [isVaultEntryMode, setIsVaultEntryMode] = useState<boolean>(() =>
+    shouldLaunchToVault(loadPersistedKeys())
+  );
+  const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState<boolean>(() =>
+    shouldLaunchToVault(loadPersistedKeys())
+  );
   const [isCodeModalOpen, setIsCodeModalOpen] = useState<boolean>(false);
   const [isSessionsModalOpen, setIsSessionsModalOpen] = useState<boolean>(false);
+  const [isPromptLibraryOpen, setIsPromptLibraryOpen] = useState<boolean>(false);
+  const [promptLibraryCreateMode, setPromptLibraryCreateMode] = useState<boolean>(false);
 
-  // Saved local sessions
+  // Saved local sessions & system prompt library
   const [savedSessions, setSavedSessions] = useState<SavedSession[]>(() => loadSavedSessions());
+  const [savedPrompts, setSavedPrompts] = useState<SavedSystemPrompt[]>(() => loadPromptLibrary());
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [sessionToast, setSessionToast] = useState<string | null>(null);
 
@@ -136,13 +160,18 @@ export default function App() {
     () => classifyPromptShotType(composerText, systemPrompt),
     [composerText, systemPrompt]
   );
+  const composerTokenCount = useMemo(() => estimateTokens(composerText), [composerText]);
+  const composerWordCount = useMemo(() => countWords(composerText), [composerText]);
 
-  // Auto-resize composer textarea cleanly
+  // Auto-resize composer textarea without showing a phantom scrollbar on short prompts
   useEffect(() => {
     const el = composerRef.current;
     if (!el) return;
     el.style.height = 'auto';
-    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+    const maxHeight = 200;
+    const nextHeight = Math.min(el.scrollHeight, maxHeight);
+    el.style.height = `${nextHeight}px`;
+    el.style.overflowY = el.scrollHeight > maxHeight ? 'auto' : 'hidden';
   }, [composerText]);
 
   // Keep conversation scrolled smoothly when new tokens arrive
@@ -170,9 +199,37 @@ export default function App() {
     (provider: ProviderId, key: string, mode: KeyStorageMode) => {
       setApiKeys((prev) => setProviderKey(prev, provider, key, mode));
       setValidationError(null);
+      if (isVaultEntryMode) {
+        if (provider !== providerId) {
+          handleProviderChange(provider);
+        }
+        setIsVaultEntryMode(false);
+        setIsApiKeyModalOpen(false);
+        const pName = getProviderById(provider).shortName;
+        setSessionToast(
+          mode === 'local' ? `${pName} key saved locally` : `${pName} ready for this session`
+        );
+        setTimeout(() => setSessionToast(null), 2400);
+        setTimeout(() => composerRef.current?.focus(), 60);
+      }
     },
-    []
+    [isVaultEntryMode, providerId, handleProviderChange]
   );
+
+  const handleCloseApiKeyModal = useCallback(() => {
+    setIsVaultEntryMode(false);
+    setIsApiKeyModalOpen(false);
+    setTimeout(() => composerRef.current?.focus(), 60);
+  }, []);
+
+  const handleEnterSandboxFromVault = useCallback(() => {
+    handleProviderChange('sandbox');
+    setIsVaultEntryMode(false);
+    setIsApiKeyModalOpen(false);
+    setSessionToast('Switched to Built-in Sandbox');
+    setTimeout(() => setSessionToast(null), 2200);
+    setTimeout(() => composerRef.current?.focus(), 60);
+  }, [handleProviderChange]);
 
   const handleRemoveKey = useCallback((provider: ProviderId) => {
     setApiKeys((prev) => removeProviderKey(prev, provider));
@@ -596,6 +653,83 @@ export default function App() {
     [activeSessionId]
   );
 
+  const handleOpenPromptLibrary = useCallback((createMode = false) => {
+    setPromptLibraryCreateMode(createMode);
+    setIsApiKeyModalOpen(false);
+    setIsCodeModalOpen(false);
+    setIsSessionsModalOpen(false);
+    setIsPromptLibraryOpen(true);
+  }, []);
+
+  const handleSaveSystemPrompt = useCallback(
+    (input: { id?: string; title: string; category: string; content: string }) => {
+      const next = upsertSavedPrompt(savedPrompts, {
+        id: input.id ?? createId(),
+        title: input.title,
+        category: input.category,
+        content: input.content,
+        updatedAt: Date.now(),
+      });
+      setSavedPrompts(next);
+      setSessionToast(input.id ? 'Updated prompt in library' : 'Saved to Prompt Library');
+      setTimeout(() => setSessionToast(null), 2200);
+    },
+    [savedPrompts]
+  );
+
+  const handleLoadSystemPrompt = useCallback((prompt: SavedSystemPrompt) => {
+    setSystemPrompt(prompt.content);
+    setSystemExpanded(true);
+    setSessionToast(`Loaded "${prompt.title}"`);
+    setTimeout(() => setSessionToast(null), 2200);
+  }, []);
+
+  const handleDeleteSystemPrompt = useCallback((id: string) => {
+    setSavedPrompts((prev) => deleteSavedPrompt(prev, id));
+  }, []);
+
+  const hasOpenModal =
+    isApiKeyModalOpen || isCodeModalOpen || isSessionsModalOpen || isPromptLibraryOpen;
+
+  // Global keyboard shortcuts: Cmd/Ctrl+Enter (send), Cmd/Ctrl+K (API keys), Cmd/Ctrl+N (new chat)
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      const action = matchGlobalShortcut(e, { hasOpenModal });
+      if (!action) return;
+
+      if (action === 'open-keys') {
+        e.preventDefault();
+        setIsCodeModalOpen(false);
+        setIsSessionsModalOpen(false);
+        setIsPromptLibraryOpen(false);
+        setIsApiKeyModalOpen(true);
+        return;
+      }
+
+      if (action === 'new-chat') {
+        e.preventDefault();
+        setIsApiKeyModalOpen(false);
+        setIsCodeModalOpen(false);
+        setIsSessionsModalOpen(false);
+        setIsPromptLibraryOpen(false);
+        handleNewChat();
+        return;
+      }
+
+      if (action === 'send-prompt') {
+        e.preventDefault();
+        handleSend();
+      }
+    };
+
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, [hasOpenModal, handleNewChat, handleSend]);
+
+  const shortcutSendHint = useMemo(() => formatShortcutHint('↵'), []);
+  const shortcutKeysHint = useMemo(() => formatShortcutHint('K'), []);
+  const shortcutNewChatHint = useMemo(() => formatShortcutHint('N'), []);
+
   const keyStatusLabel = useMemo(() => {
     if (!activeProvider.requiresKey) {
       return 'No key needed';
@@ -608,9 +742,10 @@ export default function App() {
   }, [activeProvider, activeKeyEntry]);
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-[#FAFAFA] text-zinc-950 dark:bg-[#0B0C0E] dark:text-zinc-50">
+    <MotionConfig reducedMotion="user">
+      <div className="flex h-dvh w-full flex-col overflow-hidden bg-[#FAFAFA] text-zinc-950 dark:bg-[#0B0C0E] dark:text-zinc-50">
       {/* Top Bar: Clean 3-zone contract */}
-      <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-zinc-200 bg-white px-3 sm:gap-6 sm:px-5 dark:border-zinc-800 dark:bg-[#111215]">
+      <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-zinc-200 bg-white px-3.5 sm:gap-5 sm:px-5 lg:px-6 dark:border-zinc-800 dark:bg-[#111215]">
         {/* Zone 1: Brand Wordmark */}
         <a
           href="#top"
@@ -619,10 +754,11 @@ export default function App() {
             setIsApiKeyModalOpen(false);
             setIsCodeModalOpen(false);
             setIsSessionsModalOpen(false);
+            setIsPromptLibraryOpen(false);
           }}
           className="font-display text-[15px] font-bold tracking-tight text-zinc-950 whitespace-nowrap shrink-0 sm:text-lg dark:text-zinc-50"
         >
-          Kurukshetra
+          Kool PlayGround
         </a>
 
         {/* Zone 2: Concise single-line nav controls */}
@@ -636,6 +772,7 @@ export default function App() {
               setIsApiKeyModalOpen(false);
               setIsCodeModalOpen(false);
               setIsSessionsModalOpen(false);
+              setIsPromptLibraryOpen(false);
             }}
             className="hidden text-zinc-950 whitespace-nowrap shrink-0 transition-colors hover:text-zinc-950 sm:inline-block dark:text-zinc-100 dark:hover:text-white"
           >
@@ -643,10 +780,23 @@ export default function App() {
           </button>
           <button
             type="button"
-            onClick={() => setIsApiKeyModalOpen(true)}
-            className="whitespace-nowrap shrink-0 transition-colors hover:text-zinc-950 dark:hover:text-zinc-100"
+            onClick={() => handleOpenPromptLibrary(false)}
+            className="hidden whitespace-nowrap shrink-0 transition-colors hover:text-zinc-950 md:inline-block dark:hover:text-zinc-100"
           >
-            <span className="hidden sm:inline">API </span>Keys
+            Prompt Library
+          </button>
+          <button
+            type="button"
+            onClick={() => setIsApiKeyModalOpen(true)}
+            title={`API Keys (${shortcutKeysHint})`}
+            className="inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors hover:text-zinc-950 dark:hover:text-zinc-100"
+          >
+            <span>
+              <span className="hidden sm:inline">API </span>Keys
+            </span>
+            <kbd className="hidden rounded border border-zinc-200 px-1 py-0.5 font-mono text-[10px] leading-none text-zinc-400 lg:inline-block dark:border-zinc-700/80 dark:text-zinc-500">
+              {shortcutKeysHint}
+            </kbd>
           </button>
           <button
             type="button"
@@ -669,9 +819,16 @@ export default function App() {
           <button
             type="button"
             onClick={handleNewChat}
-            className="rounded-lg bg-zinc-950 px-2.5 py-1.5 text-xs font-medium text-white whitespace-nowrap shrink-0 transition-colors hover:bg-zinc-800 sm:px-3.5 sm:py-2 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white"
+            title={`New Chat (${shortcutNewChatHint})`}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-200/90 bg-zinc-50 px-2.5 py-1.5 text-xs font-medium text-zinc-900 whitespace-nowrap shrink-0 transition-all duration-150 hover:border-zinc-300 hover:bg-zinc-100 active:scale-[0.98] sm:px-3 sm:py-1.5 dark:border-zinc-700/90 dark:bg-[#1A1C23] dark:text-zinc-100 dark:hover:border-zinc-600 dark:hover:bg-[#23262F]"
           >
-            New<span className="hidden sm:inline"> Chat</span>
+            <Plus className="h-3.5 w-3.5 text-zinc-500 dark:text-zinc-400" />
+            <span>
+              New<span className="hidden sm:inline"> Chat</span>
+            </span>
+            <kbd className="hidden rounded border border-zinc-200/90 px-1 py-0.5 font-mono text-[10px] leading-none text-zinc-400 lg:inline-block dark:border-zinc-700 dark:text-zinc-400">
+              {shortcutNewChatHint}
+            </kbd>
           </button>
         </div>
       </header>
@@ -681,7 +838,7 @@ export default function App() {
         {/* Center Playground Column */}
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
           {/* Quiet Workspace Context Toolbar */}
-          <div className="flex shrink-0 items-center justify-between gap-3 border-b border-zinc-200/80 bg-[#FAFAFA] px-5 py-2.5 dark:border-zinc-800/80 dark:bg-[#0B0C0E]">
+          <div className="flex shrink-0 items-center justify-between gap-3 border-b border-zinc-200/80 bg-[#FAFAFA] px-3.5 py-2.5 sm:px-5 lg:px-6 dark:border-zinc-800/80 dark:bg-[#0B0C0E]">
             <div className="flex min-w-0 items-center gap-2 text-xs text-zinc-600 dark:text-zinc-400">
               <span className="font-medium text-zinc-900 whitespace-nowrap dark:text-zinc-100">
                 {activeProvider.shortName}
@@ -730,14 +887,21 @@ export default function App() {
             </div>
 
             <div className="flex items-center gap-1 shrink-0">
-              {sessionToast && (
-                <span
-                  role="status"
-                  className="mr-2 text-xs text-zinc-500 whitespace-nowrap dark:text-zinc-400"
-                >
-                  {sessionToast}
-                </span>
-              )}
+              <AnimatePresence>
+                {sessionToast && (
+                  <motion.span
+                    key="session-toast"
+                    role="status"
+                    initial={{ opacity: 0, x: 6 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: 4 }}
+                    transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
+                    className="mr-2 text-xs text-zinc-500 whitespace-nowrap dark:text-zinc-400"
+                  >
+                    {sessionToast}
+                  </motion.span>
+                )}
+              </AnimatePresence>
               {providerId !== 'sandbox' && (
                 <button
                   type="button"
@@ -794,46 +958,77 @@ export default function App() {
 
           {/* Collapsible System Prompt Strip */}
           <div className="shrink-0 border-b border-zinc-200/80 bg-white dark:border-zinc-800/80 dark:bg-[#111215]">
-            <div className="mx-auto w-full max-w-3xl px-5">
-              <button
-                type="button"
-                onClick={() => setSystemExpanded((prev) => !prev)}
-                aria-expanded={systemExpanded}
-                className="flex w-full items-center justify-between py-2.5 text-left text-xs font-medium text-zinc-600 transition-colors hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-100"
-              >
-                <span className="inline-flex items-center gap-1.5">
-                  {systemExpanded ? (
-                    <ChevronDown className="h-3.5 w-3.5" />
-                  ) : (
-                    <ChevronRight className="h-3.5 w-3.5" />
-                  )}
-                  <span>System Prompt</span>
+            <div className="mx-auto w-full max-w-3xl px-3.5 sm:px-5 lg:px-6 xl:max-w-4xl 2xl:max-w-5xl">
+              <div className="flex items-center justify-between gap-2 py-2.5">
+                <button
+                  type="button"
+                  onClick={() => setSystemExpanded((prev) => !prev)}
+                  aria-expanded={systemExpanded}
+                  className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-xs font-medium text-zinc-600 transition-colors hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-100"
+                >
+                  <ChevronRight
+                    className={`h-3.5 w-3.5 shrink-0 transition-transform duration-150 ${
+                      systemExpanded ? 'rotate-90' : ''
+                    }`}
+                  />
+                  <span className="shrink-0">System Prompt</span>
                   {!systemExpanded && systemPrompt.trim() && (
-                    <span className="ml-1.5 max-w-[240px] truncate font-normal text-zinc-400 sm:max-w-[380px] dark:text-zinc-500">
+                    <span className="ml-1 truncate font-normal text-zinc-400 dark:text-zinc-500">
                       — {systemPrompt.trim()}
                     </span>
                   )}
-                </span>
-                <span className="font-mono text-[11px] text-zinc-400 tabular-nums dark:text-zinc-500">
-                  {estimateTokens(systemPrompt)} tok
-                </span>
-              </button>
+                </button>
 
-              {systemExpanded && (
-                <div className="pb-3.5">
-                  <label htmlFor="system-prompt-textarea" className="sr-only">
-                    System prompt instructions
-                  </label>
-                  <textarea
-                    id="system-prompt-textarea"
-                    rows={3}
-                    value={systemPrompt}
-                    onChange={(e) => setSystemPrompt(e.target.value)}
-                    placeholder="Define the assistant's role, tone, constraints, or output format…"
-                    className="kestrel-scroll w-full resize-y rounded-lg border border-zinc-200 bg-[#FAFAFA] px-3 py-2 text-sm leading-relaxed text-zinc-900 placeholder:text-zinc-400 focus:border-[#E04F26] focus:bg-white focus:outline-none dark:border-zinc-800 dark:bg-[#0B0C0E] dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-[#F0643C] dark:focus:bg-[#14161A]"
-                  />
+                <div className="flex shrink-0 items-center gap-2">
+                  {systemPrompt.trim() && (
+                    <button
+                      type="button"
+                      onClick={() => handleOpenPromptLibrary(true)}
+                      className="rounded px-1.5 py-0.5 text-[11px] font-medium text-[#E04F26] transition-colors hover:bg-[#E04F26]/10 dark:text-[#F0643C] dark:hover:bg-[#F0643C]/15"
+                    >
+                      Save
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => handleOpenPromptLibrary(false)}
+                    className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
+                  >
+                    <BookMarked className="h-3 w-3" />
+                    <span>Library</span>
+                  </button>
+                  <span className="font-mono text-[11px] text-zinc-400 tabular-nums dark:text-zinc-500">
+                    {estimateTokens(systemPrompt)} tok
+                  </span>
                 </div>
-              )}
+              </div>
+
+              <AnimatePresence initial={false}>
+                {systemExpanded && (
+                  <motion.div
+                    key="system-prompt-body"
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+                    className="overflow-hidden"
+                  >
+                    <div className="pb-3.5">
+                      <label htmlFor="system-prompt-textarea" className="sr-only">
+                        System prompt instructions
+                      </label>
+                      <textarea
+                        id="system-prompt-textarea"
+                        rows={3}
+                        value={systemPrompt}
+                        onChange={(e) => setSystemPrompt(e.target.value)}
+                        placeholder="Define the assistant's role, tone, constraints, or output format…"
+                        className="kestrel-scroll w-full resize-y rounded-lg border border-zinc-200 bg-[#FAFAFA] px-3 py-2 text-sm leading-relaxed text-zinc-900 placeholder:text-zinc-400 transition-colors focus:border-[#E04F26] focus:bg-white focus:outline-none dark:border-zinc-800 dark:bg-[#0B0C0E] dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-[#F0643C] dark:focus:bg-[#14161A]"
+                      />
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
           </div>
 
@@ -862,40 +1057,47 @@ export default function App() {
           </div>
 
           {/* Bottom Composer */}
-          <div className="shrink-0 border-t border-zinc-200/80 bg-[#FAFAFA] px-4 py-3.5 dark:border-zinc-800/80 dark:bg-[#0B0C0E]">
-            <div className="mx-auto w-full max-w-3xl space-y-2">
-              {validationError && (
-                <div
-                  role="alert"
-                  className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-200 bg-amber-50/90 px-3.5 py-2 text-xs text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-200"
-                >
-                  <div className="flex items-center gap-2">
-                    <AlertCircle className="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
-                    <span>{validationError}</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {activeProvider.requiresKey && !activeKeyEntry?.key && (
-                      <>
-                        <button
-                          type="button"
-                          onClick={() => setIsApiKeyModalOpen(true)}
-                          className="font-medium underline underline-offset-2 hover:opacity-80"
-                        >
-                          Paste API key
-                        </button>
-                        <span aria-hidden="true">·</span>
-                        <button
-                          type="button"
-                          onClick={() => handleProviderChange('sandbox')}
-                          className="font-medium underline underline-offset-2 hover:opacity-80"
-                        >
-                          Use Sandbox
-                        </button>
-                      </>
-                    )}
-                  </div>
-                </div>
-              )}
+          <div className="shrink-0 border-t border-zinc-200/80 bg-[#FAFAFA] px-3.5 py-3 sm:px-5 sm:py-3.5 lg:px-6 dark:border-zinc-800/80 dark:bg-[#0B0C0E]">
+            <div className="mx-auto w-full max-w-3xl space-y-2 xl:max-w-4xl 2xl:max-w-5xl">
+              <AnimatePresence initial={false}>
+                {validationError && (
+                  <motion.div
+                    key="validation-error"
+                    role="alert"
+                    initial={{ opacity: 0, y: 4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 4 }}
+                    transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-200 bg-amber-50/90 px-3.5 py-2 text-xs text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-200"
+                  >
+                    <div className="flex items-center gap-2">
+                      <AlertCircle className="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+                      <span>{validationError}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {activeProvider.requiresKey && !activeKeyEntry?.key && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => setIsApiKeyModalOpen(true)}
+                            className="font-medium underline underline-offset-2 hover:opacity-80"
+                          >
+                            Paste API key
+                          </button>
+                          <span aria-hidden="true">·</span>
+                          <button
+                            type="button"
+                            onClick={() => handleProviderChange('sandbox')}
+                            className="font-medium underline underline-offset-2 hover:opacity-80"
+                          >
+                            Use Sandbox
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
 
               <div className="rounded-xl border border-zinc-300/90 bg-white transition-colors focus-within:border-zinc-500 dark:border-zinc-700 dark:bg-[#14161A] dark:focus-within:border-zinc-500">
                 <label htmlFor="prompt-composer" className="sr-only">
@@ -911,14 +1113,56 @@ export default function App() {
                     if (validationError) setValidationError(null);
                   }}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
+                    if (
+                      e.key === 'Enter' &&
+                      !e.shiftKey &&
+                      !e.metaKey &&
+                      !e.ctrlKey &&
+                      !e.altKey
+                    ) {
                       e.preventDefault();
                       handleSend();
                     }
                   }}
-                  placeholder="Ask anything… (Enter to send)"
-                  className="kestrel-scroll block max-h-[200px] w-full resize-none bg-transparent px-4 pt-3.5 pb-2 text-[15px] leading-relaxed text-zinc-950 placeholder:text-zinc-400 focus:outline-none dark:text-zinc-100 dark:placeholder:text-zinc-500"
+                  placeholder={`Ask anything… (Enter or ${shortcutSendHint} to send)`}
+                  className="kestrel-scroll block max-h-[200px] w-full resize-none overflow-hidden bg-transparent px-4 pt-3.5 pb-2 text-[15px] leading-relaxed text-zinc-950 placeholder:text-zinc-400 focus:outline-none dark:text-zinc-100 dark:placeholder:text-zinc-500"
                 />
+
+                {/* Mobile-only untruncated length & shot-type readout */}
+                <div
+                  title={
+                    promptShot
+                      ? `${composerWordCount} ${composerWordCount === 1 ? 'word' : 'words'}, ~${composerTokenCount} tokens · ${promptShot.reason}`
+                      : `${composerWordCount} ${composerWordCount === 1 ? 'word' : 'words'}, ~${composerTokenCount} estimated input tokens`
+                  }
+                  className="flex items-center gap-1.5 px-4 pb-1 font-mono text-[11px] text-zinc-500 tabular-nums sm:hidden dark:text-zinc-400"
+                >
+                  <span>~{composerTokenCount} tok</span>
+                  <span aria-hidden="true" className="text-zinc-300 dark:text-zinc-700">
+                    ·
+                  </span>
+                  <span>
+                    {composerWordCount} {composerWordCount === 1 ? 'word' : 'words'}
+                  </span>
+                  {promptShot && (
+                    <>
+                      <span aria-hidden="true" className="text-zinc-300 dark:text-zinc-700">
+                        ·
+                      </span>
+                      <span
+                        className={
+                          promptShot.type === 'few-shot'
+                            ? 'text-[#E04F26] dark:text-[#F0643C]'
+                            : promptShot.type === 'one-shot'
+                              ? 'text-zinc-700 dark:text-zinc-200'
+                              : 'text-zinc-500 dark:text-zinc-400'
+                        }
+                      >
+                        {promptShot.label}
+                      </span>
+                    </>
+                  )}
+                </div>
 
                 <div className="flex items-center justify-between gap-1.5 px-2.5 pb-2.5 pt-1 sm:gap-2 sm:px-3">
                   <div className="flex min-w-0 items-center gap-1 sm:gap-1.5">
@@ -957,7 +1201,7 @@ export default function App() {
                       aria-pressed={params.jsonMode}
                       className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium whitespace-nowrap transition-colors disabled:cursor-not-allowed disabled:opacity-40 sm:gap-1.5 sm:px-2.5 ${
                         params.jsonMode
-                          ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950'
+                          ? 'bg-zinc-900 text-white dark:bg-zinc-800 dark:text-zinc-100 dark:ring-1 dark:ring-zinc-600'
                           : 'text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100'
                       }`}
                     >
@@ -966,10 +1210,20 @@ export default function App() {
                     </button>
 
                     <span
-                      title={promptShot?.reason ?? 'Estimated input tokens'}
-                      className="inline-flex min-w-0 items-center gap-1 truncate pl-0.5 font-mono text-[11px] text-zinc-500 tabular-nums whitespace-nowrap sm:gap-1.5 sm:pl-1.5 dark:text-zinc-400"
+                      title={
+                        promptShot
+                          ? `${composerWordCount} ${composerWordCount === 1 ? 'word' : 'words'}, ~${composerTokenCount} tokens · ${promptShot.reason}`
+                          : `${composerWordCount} ${composerWordCount === 1 ? 'word' : 'words'}, ~${composerTokenCount} estimated input tokens`
+                      }
+                      className="hidden min-w-0 items-center gap-1.5 truncate pl-1.5 font-mono text-[11px] text-zinc-500 tabular-nums whitespace-nowrap sm:inline-flex dark:text-zinc-400"
                     >
-                      <span>~{estimateTokens(composerText)} tok</span>
+                      <span>~{composerTokenCount} tok</span>
+                      <span aria-hidden="true" className="text-zinc-300 dark:text-zinc-700">
+                        ·
+                      </span>
+                      <span data-testid="composer-word-count">
+                        {composerWordCount} {composerWordCount === 1 ? 'word' : 'words'}
+                      </span>
                       {promptShot && (
                         <>
                           <span aria-hidden="true" className="text-zinc-300 dark:text-zinc-700">
@@ -997,7 +1251,7 @@ export default function App() {
                       type="button"
                       onClick={stopGeneration}
                       aria-label="Stop generating"
-                      className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white whitespace-nowrap transition-colors hover:bg-zinc-700 sm:px-3.5 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-zinc-200"
+                      className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white whitespace-nowrap transition-all duration-150 hover:bg-zinc-700 active:scale-[0.98] sm:px-3.5 dark:border dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-100 dark:hover:bg-zinc-700"
                     >
                       <Square className="h-3 w-3 fill-current" />
                       <span>Stop</span>
@@ -1008,7 +1262,8 @@ export default function App() {
                       type="button"
                       onClick={handleSend}
                       aria-label="Send prompt"
-                      className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-[#E04F26] px-3 py-1.5 text-xs font-medium text-white whitespace-nowrap transition-colors hover:bg-[#C8401B] focus-visible:ring-2 focus-visible:ring-[#E04F26]/40 focus-visible:outline-none sm:px-3.5 dark:bg-[#F0643C] dark:hover:bg-[#E04F26]"
+                      title={`Send prompt (${shortcutSendHint})`}
+                      className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-[#E04F26] px-3 py-1.5 text-xs font-medium text-white whitespace-nowrap transition-all duration-150 hover:bg-[#C8401B] active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-[#E04F26]/40 focus-visible:outline-none sm:px-3.5 dark:bg-[#F0643C] dark:hover:bg-[#E04F26]"
                     >
                       <span>Run</span>
                       <ArrowUp className="h-3.5 w-3.5" />
@@ -1046,14 +1301,16 @@ export default function App() {
       {/* Modals */}
       <ApiKeyModal
         isOpen={isApiKeyModalOpen}
+        isInitialLaunch={isVaultEntryMode}
         initialProvider={providerId}
         customBaseUrl={customBaseUrl}
         keys={apiKeys}
-        onClose={() => setIsApiKeyModalOpen(false)}
+        onClose={handleCloseApiKeyModal}
         onSaveKey={handleSaveKey}
         onRemoveKey={handleRemoveKey}
         onClearSessionKeys={handleClearSessionKeys}
         onClearAllKeys={handleClearAllKeys}
+        onSwitchToSandbox={handleEnterSandboxFromVault}
       />
 
       <CodeExportModal
@@ -1076,6 +1333,18 @@ export default function App() {
         onLoadSession={handleLoadSession}
         onDeleteSession={handleDeleteSession}
       />
-    </div>
+
+      <PromptLibraryDrawer
+        isOpen={isPromptLibraryOpen}
+        startInCreateMode={promptLibraryCreateMode}
+        currentSystemPrompt={systemPrompt}
+        savedPrompts={savedPrompts}
+        onClose={() => setIsPromptLibraryOpen(false)}
+        onLoadPrompt={handleLoadSystemPrompt}
+        onSavePrompt={handleSaveSystemPrompt}
+        onDeletePrompt={handleDeleteSystemPrompt}
+      />
+      </div>
+    </MotionConfig>
   );
 }
