@@ -31,6 +31,15 @@ export const PROVIDERS: ProviderConfig[] = [
     defaultBaseUrl: 'https://api.groq.com/openai/v1',
     models: [
       {
+        id: 'openai/gpt-oss-120b',
+        label: 'GPT-OSS 120B',
+        contextWindow: '128K',
+        maxOutputTokens: 32768,
+        supportsReasoning: true,
+        nativeBrowserSearch: true,
+        supportsTemperature: true,
+      },
+      {
         id: 'llama-3.3-70b-versatile',
         label: 'Llama 3.3 70B Versatile',
         contextWindow: '128K',
@@ -49,15 +58,6 @@ export const PROVIDERS: ProviderConfig[] = [
         label: 'Llama 4 Scout 17B',
         contextWindow: '128K',
         maxOutputTokens: 8192,
-        supportsTemperature: true,
-      },
-      {
-        id: 'openai/gpt-oss-120b',
-        label: 'GPT-OSS 120B',
-        contextWindow: '128K',
-        maxOutputTokens: 32768,
-        supportsReasoning: true,
-        nativeBrowserSearch: true,
         supportsTemperature: true,
       },
       {

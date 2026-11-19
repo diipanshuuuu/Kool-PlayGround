@@ -167,7 +167,7 @@ test('validateRequestConfig enforces BYOK keys and custom URLs without faking va
 
   assert.equal(getEffectiveModelId('groq', 'llama-3.3-70b-versatile', ''), 'llama-3.3-70b-versatile');
   assert.equal(getEffectiveModelId('groq', 'llama-3.3-70b-versatile', 'custom/override'), 'custom/override');
-  assert.equal(getDefaultModelForProvider('groq'), 'llama-3.3-70b-versatile');
+  assert.equal(getDefaultModelForProvider('groq'), 'openai/gpt-oss-120b');
 });
 
 test('SSE parsers extract deltas, reasoning, usage, and termination cleanly', () => {
