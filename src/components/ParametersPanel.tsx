@@ -1,13 +1,16 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
   ChevronDown,
   ChevronRight,
   Globe,
   KeyRound,
+  Loader2,
   LogOut,
   Plus,
+  RefreshCw,
   RotateCcw,
+  Search,
   X,
 } from 'lucide-react';
 import {
@@ -19,13 +22,19 @@ import {
   getModelOption,
   getProviderById,
 } from '../lib/providers';
+import { filterModelsByQuery } from '../lib/modelDiscovery';
 import { maskApiKey } from '../lib/keyStorage';
+import { SessionMetricsPanel } from './SessionMetricsPanel';
 import type {
   ApiKeyEntry,
+  ChatMessage,
+  ModelOption,
   PlaygroundParams,
   ProviderId,
   ReasoningEffort,
 } from '../lib/types';
+
+export type ModelDiscoveryStatus = 'idle' | 'loading' | 'loaded' | 'error';
 
 interface ParametersPanelProps {
   providerId: ProviderId;
@@ -33,8 +42,14 @@ interface ParametersPanelProps {
   customBaseUrl: string;
   customModelId: string;
   params: PlaygroundParams;
+  messages: ChatMessage[];
+  systemPrompt: string;
+  isDark: boolean;
   activeKeyEntry?: ApiKeyEntry;
   hasAnySessionKey: boolean;
+  availableModels: ModelOption[];
+  modelsStatus: ModelDiscoveryStatus;
+  modelsError?: string;
   isOpenDesktop: boolean;
   isOpenMobile: boolean;
   onCloseMobile: () => void;
@@ -46,6 +61,7 @@ interface ParametersPanelProps {
   onResetDefaults: () => void;
   onOpenApiKeyModal: () => void;
   onClearSessionKeys: () => void;
+  onRefreshModels: () => void;
 }
 
 function ToggleRow({
@@ -192,8 +208,14 @@ export function ParametersPanel({
   customBaseUrl,
   customModelId,
   params,
+  messages,
+  systemPrompt,
+  isDark,
   activeKeyEntry,
   hasAnySessionKey,
+  availableModels,
+  modelsStatus,
+  modelsError,
   isOpenDesktop,
   isOpenMobile,
   onCloseMobile,
@@ -205,12 +227,38 @@ export function ParametersPanel({
   onResetDefaults,
   onOpenApiKeyModal,
   onClearSessionKeys,
+  onRefreshModels,
 }: ParametersPanelProps) {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [stopDraft, setStopDraft] = useState('');
+  const [modelFilter, setModelFilter] = useState('');
+
+  useEffect(() => {
+    setModelFilter('');
+  }, [providerId]);
 
   const provider = getProviderById(providerId);
-  const modelOption = getModelOption(providerId, modelId);
+  const hasLiveModels = availableModels.length > 0;
+  const effectiveModels = hasLiveModels
+    ? availableModels
+    : providerId === 'custom'
+      ? []
+      : provider.models;
+
+  const filteredModels = useMemo(
+    () => filterModelsByQuery(effectiveModels, modelFilter),
+    [effectiveModels, modelFilter]
+  );
+
+  // Ensure the currently selected model stays selectable even if not in the active filter
+  const selectOptions = useMemo(() => {
+    if (!modelFilter.trim()) return effectiveModels;
+    if (filteredModels.some((m) => m.id === modelId)) return filteredModels;
+    const current = effectiveModels.find((m) => m.id === modelId);
+    return current ? [current, ...filteredModels] : filteredModels;
+  }, [effectiveModels, filteredModels, modelFilter, modelId]);
+
+  const modelOption = getModelOption(providerId, modelId, availableModels);
   const samplingDisabled = modelOption?.supportsTemperature === false;
   const maxAllowedTokens = modelOption?.maxOutputTokens ?? 16384;
   const activePreset = detectParameterPreset(params, providerId);
@@ -295,21 +343,123 @@ export function ParametersPanel({
             </div>
           </div>
 
-          {providerId !== 'custom' && (
+          {providerId === 'custom' && (
             <div className="space-y-1.5">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-2">
+                <label
+                  htmlFor="custom-base-url"
+                  className="block text-xs font-medium text-zinc-700 dark:text-zinc-300"
+                >
+                  Base URL
+                </label>
+                {activeKeyEntry && customBaseUrl.trim() && (
+                  <button
+                    type="button"
+                    onClick={onRefreshModels}
+                    disabled={modelsStatus === 'loading'}
+                    className="inline-flex items-center gap-1 font-mono text-[11px] text-zinc-500 transition-colors hover:text-[#E04F26] disabled:opacity-50 dark:text-zinc-400 dark:hover:text-[#F0643C]"
+                  >
+                    {modelsStatus === 'loading' ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <RefreshCw className="h-3 w-3" />
+                    )}
+                    <span>Fetch models</span>
+                  </button>
+                )}
+              </div>
+              <input
+                id="custom-base-url"
+                type="url"
+                value={customBaseUrl}
+                onChange={(e) => onCustomBaseUrlChange(e.target.value)}
+                placeholder="https://api.together.xyz/v1"
+                className="w-full rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 font-mono text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-[#E04F26] focus:outline-none dark:border-zinc-700 dark:bg-[#181A1F] dark:text-zinc-100 dark:focus:border-[#F0643C]"
+              />
+            </div>
+          )}
+
+          {(providerId !== 'custom' || hasLiveModels) && (
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between gap-2">
                 <label
                   htmlFor="model-select"
                   className="block text-xs font-medium text-zinc-700 dark:text-zinc-300"
                 >
                   Model
                 </label>
-                {modelOption && (
-                  <span className="font-mono text-[11px] text-zinc-500 tabular-nums dark:text-zinc-400">
-                    {modelOption.contextWindow} ctx
-                  </span>
-                )}
+                <div className="flex items-center gap-1.5">
+                  {modelsStatus === 'loading' ? (
+                    <span className="inline-flex items-center gap-1 font-mono text-[11px] text-zinc-500 dark:text-zinc-400">
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      <span>Checking key…</span>
+                    </span>
+                  ) : (
+                    <>
+                      {hasLiveModels && (
+                        <span
+                          data-testid="live-models-count"
+                          className="font-mono text-[11px] text-[#E04F26] tabular-nums dark:text-[#F0643C]"
+                          title="Models discovered directly from your active API key"
+                        >
+                          {availableModels.length} live
+                        </span>
+                      )}
+                      {modelOption && modelOption.contextWindow !== '—' && (
+                        <>
+                          {hasLiveModels && (
+                            <span aria-hidden="true" className="text-zinc-300 dark:text-zinc-700">
+                              ·
+                            </span>
+                          )}
+                          <span className="font-mono text-[11px] text-zinc-500 tabular-nums dark:text-zinc-400">
+                            {modelOption.contextWindow} ctx
+                          </span>
+                        </>
+                      )}
+                      {provider.requiresKey && activeKeyEntry && (
+                        <button
+                          type="button"
+                          onClick={onRefreshModels}
+                          aria-label="Refresh available models"
+                          title="Re-fetch available models for this API key"
+                          className="rounded p-0.5 text-zinc-400 transition-colors hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+                        >
+                          <RefreshCw className="h-3 w-3" />
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
               </div>
+
+              {effectiveModels.length > 10 && (
+                <div className="relative">
+                  <Search
+                    aria-hidden="true"
+                    className="pointer-events-none absolute top-1/2 left-2.5 h-3 w-3 -translate-y-1/2 text-zinc-400 dark:text-zinc-500"
+                  />
+                  <input
+                    type="text"
+                    value={modelFilter}
+                    onChange={(e) => setModelFilter(e.target.value)}
+                    aria-label="Filter available models"
+                    placeholder={`Search ${effectiveModels.length} available models…`}
+                    className="w-full rounded-lg border border-zinc-200 bg-zinc-50/70 py-1.5 pr-7 pl-7 text-xs text-zinc-900 placeholder:text-zinc-400 transition-colors focus:border-[#E04F26] focus:bg-white focus:outline-none dark:border-zinc-800 dark:bg-[#0E0F12] dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-[#F0643C] dark:focus:bg-[#14161A]"
+                  />
+                  {modelFilter && (
+                    <button
+                      type="button"
+                      onClick={() => setModelFilter('')}
+                      aria-label="Clear model search"
+                      className="absolute top-1/2 right-2 -translate-y-1/2 rounded p-0.5 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  )}
+                </div>
+              )}
+
               <div className="group relative">
                 <select
                   id="model-select"
@@ -317,7 +467,7 @@ export function ParametersPanel({
                   onChange={(e) => onModelChange(e.target.value)}
                   className="w-full cursor-pointer appearance-none rounded-lg border border-zinc-200 bg-white py-2 pr-8 pl-2.5 font-mono text-xs text-zinc-900 transition-colors hover:border-zinc-300 focus:border-[#E04F26] focus:outline-none dark:border-zinc-700 dark:bg-[#181A1F] dark:text-zinc-100 dark:hover:border-zinc-600 dark:focus:border-[#F0643C]"
                 >
-                  {provider.models.map((m) => (
+                  {selectOptions.map((m) => (
                     <option key={m.id} value={m.id}>
                       {m.label}
                     </option>
@@ -328,60 +478,61 @@ export function ParametersPanel({
                   className="pointer-events-none absolute top-1/2 right-2.5 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400 transition-colors group-hover:text-zinc-600 dark:text-zinc-500 dark:group-hover:text-zinc-300"
                 />
               </div>
+
+              {modelFilter.trim() && filteredModels.length === 0 && (
+                <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                  No models match "{modelFilter.trim()}".
+                </p>
+              )}
+
+              {modelsStatus === 'error' && modelsError && (
+                <div className="flex items-start justify-between gap-2 text-[11px] text-amber-700 dark:text-amber-400">
+                  <span className="leading-snug">{modelsError}</span>
+                  <button
+                    type="button"
+                    onClick={onRefreshModels}
+                    className="shrink-0 font-medium underline underline-offset-2 hover:opacity-80"
+                  >
+                    Retry
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
-          {providerId === 'custom' && (
-            <div className="space-y-3">
-              <div className="space-y-1.5">
-                <label
-                  htmlFor="custom-base-url"
-                  className="block text-xs font-medium text-zinc-700 dark:text-zinc-300"
-                >
-                  Base URL
-                </label>
-                <input
-                  id="custom-base-url"
-                  type="url"
-                  value={customBaseUrl}
-                  onChange={(e) => onCustomBaseUrlChange(e.target.value)}
-                  placeholder="https://api.together.xyz/v1"
-                  className="w-full rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 font-mono text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-[#E04F26] focus:outline-none dark:border-zinc-700 dark:bg-[#181A1F] dark:text-zinc-100 dark:focus:border-[#F0643C]"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label
-                  htmlFor="custom-model-id"
-                  className="block text-xs font-medium text-zinc-700 dark:text-zinc-300"
-                >
-                  Model ID
-                </label>
-                <input
-                  id="custom-model-id"
-                  type="text"
-                  value={customModelId}
-                  onChange={(e) => onCustomModelIdChange(e.target.value)}
-                  placeholder="meta-llama/Llama-3.3-70B-Instruct-Turbo"
-                  className="w-full rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 font-mono text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-[#E04F26] focus:outline-none dark:border-zinc-700 dark:bg-[#181A1F] dark:text-zinc-100 dark:focus:border-[#F0643C]"
-                />
-              </div>
+          {providerId === 'custom' && !hasLiveModels && modelsStatus === 'error' && modelsError && (
+            <div className="flex items-start justify-between gap-2 text-[11px] text-amber-700 dark:text-amber-400">
+              <span className="leading-snug">{modelsError}</span>
+              <button
+                type="button"
+                onClick={onRefreshModels}
+                className="shrink-0 font-medium underline underline-offset-2 hover:opacity-80"
+              >
+                Retry
+              </button>
             </div>
           )}
 
-          {providerId !== 'custom' && providerId !== 'sandbox' && (
+          {providerId !== 'sandbox' && (
             <div className="space-y-1">
               <label
-                htmlFor="model-override-input"
+                htmlFor={providerId === 'custom' ? 'custom-model-id' : 'model-override-input'}
                 className="block text-[11px] text-zinc-500 dark:text-zinc-400"
               >
-                Custom model ID override (optional)
+                {providerId === 'custom' && !hasLiveModels
+                  ? 'Model ID'
+                  : 'Custom model ID override (optional)'}
               </label>
               <input
-                id="model-override-input"
+                id={providerId === 'custom' ? 'custom-model-id' : 'model-override-input'}
                 type="text"
                 value={customModelId}
                 onChange={(e) => onCustomModelIdChange(e.target.value)}
-                placeholder={modelId}
+                placeholder={
+                  providerId === 'custom' && !hasLiveModels
+                    ? 'meta-llama/Llama-3.3-70B-Instruct-Turbo'
+                    : modelId
+                }
                 className="w-full rounded-lg border border-zinc-200 bg-transparent px-2.5 py-1.5 font-mono text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-[#E04F26] focus:outline-none dark:border-zinc-800 dark:text-zinc-100 dark:placeholder:text-zinc-600 dark:focus:border-[#F0643C]"
               />
             </div>
@@ -542,7 +693,7 @@ export function ParametersPanel({
                   transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
                   className="overflow-hidden"
                 >
-                  <div className="mt-3 space-y-4">
+                  <div className="mt-3 space-y-4 px-0.5 pb-1">
                 <SliderControl
                   id="param-frequency-penalty"
                   label="Frequency penalty"
@@ -717,6 +868,13 @@ export function ParametersPanel({
             </div>
           )}
         </section>
+
+        {/* Section 4: Session Metrics */}
+        <SessionMetricsPanel
+          messages={messages}
+          systemPrompt={systemPrompt}
+          isDark={isDark}
+        />
       </div>
 
       {/* Footer Reset */}

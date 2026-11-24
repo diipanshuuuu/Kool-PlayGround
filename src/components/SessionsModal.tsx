@@ -106,27 +106,41 @@ export function SessionsModal({
               </p>
             </div>
           ) : (
-            <ul className="divide-y divide-zinc-100 dark:divide-zinc-800/80">
+            <ul className="space-y-2">
               {sessions.map((session) => {
                 const provider = getProviderById(session.provider);
                 const isActive = session.id === activeSessionId;
                 return (
                   <li
                     key={session.id}
-                    className="flex items-center justify-between gap-3 py-3 first:pt-1 last:pb-1"
+                    data-active={isActive ? 'true' : 'false'}
+                    className={`flex items-center justify-between gap-3 rounded-lg border px-3.5 py-2.5 transition-colors ${
+                      isActive
+                        ? 'border-[#E04F26]/50 bg-[#E04F26]/[0.06] dark:border-[#F0643C]/50 dark:bg-[#F0643C]/[0.10]'
+                        : 'border-zinc-200/80 bg-transparent hover:border-zinc-300 hover:bg-zinc-50/70 dark:border-zinc-800/80 dark:hover:border-zinc-700 dark:hover:bg-zinc-800/40'
+                    }`}
                   >
                     <button
                       type="button"
+                      aria-current={isActive ? 'true' : undefined}
                       onClick={() => {
                         onLoadSession(session);
                         onClose();
                       }}
-                      className="min-w-0 flex-1 text-left transition-colors hover:opacity-80"
+                      className="min-w-0 flex-1 text-left transition-opacity hover:opacity-90"
                     >
-                      <div className="truncate text-sm font-medium text-zinc-900 dark:text-zinc-100">
-                        {session.title}
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`truncate text-sm font-medium ${
+                            isActive
+                              ? 'text-zinc-950 dark:text-white'
+                              : 'text-zinc-900 dark:text-zinc-100'
+                          }`}
+                        >
+                          {session.title}
+                        </span>
                         {isActive && (
-                          <span className="ml-2 font-mono text-[11px] font-normal text-[#E04F26] dark:text-[#F0643C]">
+                          <span className="shrink-0 font-mono text-[11px] font-medium text-[#E04F26] dark:text-[#F0643C]">
                             Active
                           </span>
                         )}

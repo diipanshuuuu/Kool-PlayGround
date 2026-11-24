@@ -1,4 +1,4 @@
-import { getProviderById } from './providers';
+import { getDefaultModelForProvider, getProviderById } from './providers';
 import type { ChatMessage, PlaygroundParams, ProviderId } from './types';
 
 export type CodeLanguage = 'curl' | 'javascript' | 'python';
@@ -117,12 +117,18 @@ print(response.json())`;
       ? 'https://api.groq.com/openai/v1/chat/completions'
       : `${baseUrl}/chat/completions`;
   const msgs = buildConversationMessages(opts.systemPrompt, opts.messages, true);
+  const resolvedModel =
+    opts.providerId === 'sandbox' ? getDefaultModelForProvider('groq') : opts.modelId;
+  const isOSeriesOpenAI = opts.providerId === 'openai' && /^o\d/i.test(resolvedModel);
+  const usesMaxCompletionTokens =
+    opts.providerId === 'groq' || opts.providerId === 'sandbox' || isOSeriesOpenAI;
   const body: Record<string, unknown> = {
-    model: opts.providerId === 'sandbox' ? 'llama-3.3-70b-versatile' : opts.modelId,
+    model: resolvedModel,
     messages: msgs,
-    temperature: opts.params.temperature,
-    max_tokens: opts.params.maxTokens,
-    top_p: opts.params.topP,
+    ...(isOSeriesOpenAI ? {} : { temperature: opts.params.temperature, top_p: opts.params.topP }),
+    ...(usesMaxCompletionTokens
+      ? { max_completion_tokens: opts.params.maxTokens }
+      : { max_tokens: opts.params.maxTokens }),
     stream: opts.params.stream,
   };
 
@@ -182,10 +188,12 @@ client = OpenAI(
 
 completion = client.chat.completions.create(
     model=${JSON.stringify(body.model)},
-    messages=${JSON.stringify(body.messages, null, 4)},
-    temperature=${opts.params.temperature},
-    max_tokens=${opts.params.maxTokens},
-    top_p=${opts.params.topP},
+    messages=${JSON.stringify(body.messages, null, 4)},${
+    isOSeriesOpenAI
+      ? ''
+      : `\n    temperature=${opts.params.temperature},\n    top_p=${opts.params.topP},`
+  }
+    ${usesMaxCompletionTokens ? 'max_completion_tokens' : 'max_tokens'}=${opts.params.maxTokens},
     stream=${opts.params.stream ? 'True' : 'False'},${
     opts.params.jsonMode ? '\n    response_format={"type": "json_object"},' : ''
   }

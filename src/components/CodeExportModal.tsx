@@ -143,10 +143,10 @@ export function CodeExportModal({
                     role="tab"
                     aria-selected={language === lang.id}
                     onClick={() => setLanguage(lang.id)}
-                    className={`rounded-md px-3 py-1.5 text-xs font-medium whitespace-nowrap transition-all duration-150 ${
+                    className={`rounded-md border px-3 py-1.5 text-xs font-medium whitespace-nowrap transition-all duration-150 ${
                       language === lang.id
-                        ? 'bg-white text-zinc-950 shadow-xs ring-1 ring-zinc-200 dark:bg-[#1B1D22] dark:text-zinc-50 dark:ring-zinc-700'
-                        : 'text-zinc-600 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-100'
+                        ? 'border-zinc-200 bg-white text-zinc-950 shadow-xs dark:border-zinc-700 dark:bg-[#1B1D22] dark:text-zinc-50'
+                        : 'border-transparent text-zinc-600 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-100'
                     }`}
                   >
                     {lang.label}

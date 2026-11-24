@@ -95,6 +95,13 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
               </a>
             );
           },
+          table({ children, ...rest }) {
+            return (
+              <div className="kestrel-scroll my-3 w-full overflow-x-auto">
+                <table {...rest}>{children}</table>
+              </div>
+            );
+          },
         }}
       >
         {content}

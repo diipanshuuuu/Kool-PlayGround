@@ -10,6 +10,7 @@ import {
   parseAnthropicSseLine,
   parseOpenAISseLine,
 } from './src/lib/streamParser.ts';
+import { normalizeProviderModels } from './src/lib/modelDiscovery.ts';
 import type {
   AppSseEvent,
   PlaygroundParams,
@@ -318,6 +319,86 @@ async function startServer() {
     } catch (err) {
       res.status(200).json({
         ok: false,
+        error: formatProviderError(err),
+      });
+    }
+  });
+
+  // Stateless BYOK model discovery — queries the provider's /models endpoint using the user's API key
+  app.post('/api/proxy/models', async (req: Request, res: Response) => {
+    const apiKey = String(req.header('x-provider-api-key') || '').trim();
+    const provider = req.body?.provider as ProviderId | undefined;
+    const customBaseUrl =
+      typeof req.body?.customBaseUrl === 'string' ? req.body.customBaseUrl.trim() : '';
+
+    if (!apiKey) {
+      res.status(400).json({ ok: false, models: [], error: 'Enter an API key to fetch available models.' });
+      return;
+    }
+    if (!provider || provider === 'sandbox') {
+      res.status(400).json({ ok: false, models: [], error: 'Select a bring-your-own-key provider.' });
+      return;
+    }
+
+    let modelsUrl = '';
+    const headers: Record<string, string> = {};
+
+    if (provider === 'groq') {
+      modelsUrl = 'https://api.groq.com/openai/v1/models';
+      headers.Authorization = `Bearer ${apiKey}`;
+    } else if (provider === 'openai') {
+      modelsUrl = 'https://api.openai.com/v1/models';
+      headers.Authorization = `Bearer ${apiKey}`;
+    } else if (provider === 'openrouter') {
+      modelsUrl = 'https://openrouter.ai/api/v1/models';
+      headers.Authorization = `Bearer ${apiKey}`;
+      headers['X-Title'] = 'Kool PlayGround';
+    } else if (provider === 'anthropic') {
+      modelsUrl = 'https://api.anthropic.com/v1/models?limit=100';
+      headers['x-api-key'] = apiKey;
+      headers['anthropic-version'] = '2023-06-01';
+    } else if (provider === 'custom') {
+      if (!customBaseUrl) {
+        res.status(400).json({ ok: false, models: [], error: 'Enter a Base URL first.' });
+        return;
+      }
+      const cleaned = customBaseUrl.replace(/\/+$/, '').replace(/\/chat\/completions$/, '');
+      modelsUrl = `${cleaned}/models`;
+      headers.Authorization = `Bearer ${apiKey}`;
+    }
+
+    if (!modelsUrl || isBlockedMetadataHost(modelsUrl)) {
+      res.status(400).json({ ok: false, models: [], error: 'Invalid or disallowed endpoint URL.' });
+      return;
+    }
+
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10000);
+      const upstream = await fetch(modelsUrl, {
+        method: 'GET',
+        headers,
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+
+      if (!upstream.ok) {
+        const text = await upstream.text().catch(() => '');
+        res.status(200).json({
+          ok: false,
+          models: [],
+          error: formatProviderError(text || `Could not fetch models (HTTP ${upstream.status}).`),
+        });
+        return;
+      }
+
+      const payload = (await upstream.json()) as unknown;
+      const models = normalizeProviderModels(provider, payload);
+      res.json({ ok: true, models, count: models.length });
+    } catch (err) {
+      res.status(200).json({
+        ok: false,
+        models: [],
         error: formatProviderError(err),
       });
     }
@@ -653,10 +734,12 @@ async function startServer() {
         stream: params?.stream !== false,
       };
 
-      if (isOpenAIReasoningModel) {
+      if (isOpenAIReasoningModel || provider === 'groq') {
         oaiBody.max_completion_tokens = params?.maxTokens || 2048;
       } else {
         oaiBody.max_tokens = params?.maxTokens || 2048;
+      }
+      if (!isOpenAIReasoningModel) {
         oaiBody.temperature = params?.temperature ?? 0.7;
         oaiBody.top_p = params?.topP ?? 1;
       }

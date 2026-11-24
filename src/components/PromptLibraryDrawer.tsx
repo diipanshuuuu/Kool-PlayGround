@@ -158,21 +158,21 @@ export function PromptLibraryDrawer({
             className="flex h-full w-full max-w-md flex-col border-l border-zinc-200 bg-white shadow-2xl dark:border-zinc-800 dark:bg-[#111215]"
           >
         {/* Header */}
-        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-zinc-200 px-5 py-4 dark:border-zinc-800">
-          <div className="flex items-center gap-2.5">
-            <BookMarked className="h-4 w-4 text-[#E04F26] dark:text-[#F0643C]" />
+        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-zinc-200 px-4 py-4 sm:px-5 dark:border-zinc-800">
+          <div className="flex min-w-0 items-center gap-2">
+            <BookMarked className="h-4 w-4 shrink-0 text-[#E04F26] dark:text-[#F0643C]" />
             <h2
               id="prompt-library-title"
-              className="font-display text-base font-semibold text-zinc-950 dark:text-zinc-50"
+              className="truncate font-display text-base font-semibold text-zinc-950 dark:text-zinc-50"
             >
               Prompt Library
             </h2>
-            <span className="font-mono text-[11px] text-zinc-400 tabular-nums dark:text-zinc-500">
+            <span className="hidden shrink-0 font-mono text-[11px] text-zinc-400 tabular-nums sm:inline dark:text-zinc-500">
               {savedPrompts.length} saved
             </span>
           </div>
 
-          <div className="flex items-center gap-1.5">
+          <div className="flex shrink-0 items-center gap-1.5">
             <button
               type="button"
               onClick={openCreateFromCurrent}
@@ -304,21 +304,31 @@ export function PromptLibraryDrawer({
         )}
 
         {/* Search & Category Filter Bar */}
-        <div className="shrink-0 space-y-2.5 border-b border-zinc-200 px-5 py-3 dark:border-zinc-800">
+        <div className="shrink-0 space-y-2.5 border-b border-zinc-200 px-4 py-3 sm:px-5 dark:border-zinc-800">
           <div className="relative">
             <Search className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
             <input
-              type="search"
+              type="text"
               aria-label="Search prompt library"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search system prompts…"
-              className="w-full rounded-lg border border-zinc-200 bg-zinc-50/70 py-1.5 pr-3 pl-8 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-[#E04F26] focus:bg-white focus:outline-none dark:border-zinc-800 dark:bg-[#181A1F] dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-[#F0643C]"
+              className="w-full rounded-lg border border-zinc-200 bg-zinc-50/70 py-1.5 pr-8 pl-8 text-xs text-zinc-900 placeholder:text-zinc-400 transition-colors focus:border-[#E04F26] focus:bg-white focus:outline-none dark:border-zinc-800 dark:bg-[#181A1F] dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-[#F0643C]"
             />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery('')}
+                aria-label="Clear prompt search"
+                className="absolute top-1/2 right-2 -translate-y-1/2 rounded p-0.5 text-zinc-400 transition-colors hover:text-zinc-700 dark:hover:text-zinc-200"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            )}
           </div>
 
           <div
-            className="kestrel-scroll flex items-center gap-1 overflow-x-auto pb-0.5"
+            className="flex flex-wrap items-center gap-0.5"
             role="tablist"
             aria-label="Prompt categories"
           >
@@ -331,10 +341,10 @@ export function PromptLibraryDrawer({
                   role="tab"
                   aria-selected={isSelected}
                   onClick={() => setActiveCategory(cat)}
-                  className={`rounded-md px-2 py-1 text-[11px] font-medium whitespace-nowrap transition-colors ${
+                  className={`rounded-md border px-1.5 py-1 text-[11px] font-medium whitespace-nowrap transition-colors sm:px-2 ${
                     isSelected
-                      ? 'bg-zinc-900 text-white dark:bg-zinc-800 dark:text-zinc-100 dark:ring-1 dark:ring-zinc-600'
-                      : 'text-zinc-600 hover:bg-zinc-100 hover:text-zinc-950 dark:text-zinc-400 dark:hover:bg-zinc-800/70 dark:hover:text-zinc-100'
+                      ? 'border-zinc-900 bg-zinc-900 text-white dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-100'
+                      : 'border-transparent text-zinc-600 hover:bg-zinc-100 hover:text-zinc-950 dark:text-zinc-400 dark:hover:bg-zinc-800/70 dark:hover:text-zinc-100'
                   }`}
                 >
                   {cat}

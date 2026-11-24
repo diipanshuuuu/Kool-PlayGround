@@ -287,7 +287,15 @@ export function getDefaultModelForProvider(id: ProviderId): string {
   return provider.models[0]?.id ?? '';
 }
 
-export function getModelOption(providerId: ProviderId, modelId: string): ModelOption | undefined {
+export function getModelOption(
+  providerId: ProviderId,
+  modelId: string,
+  dynamicModels?: ModelOption[]
+): ModelOption | undefined {
+  if (dynamicModels && dynamicModels.length > 0) {
+    const dynamicMatch = dynamicModels.find((m) => m.id === modelId);
+    if (dynamicMatch) return dynamicMatch;
+  }
   const provider = getProviderById(providerId);
   return provider.models.find((m) => m.id === modelId);
 }
@@ -299,7 +307,8 @@ export function getEffectiveModelId(
 ): string {
   const trimmedCustom = customModelId.trim();
   if (providerId === 'custom') {
-    return trimmedCustom;
+    if (trimmedCustom) return trimmedCustom;
+    return selectedModel && selectedModel !== 'custom-model' ? selectedModel : '';
   }
   return trimmedCustom || selectedModel || getDefaultModelForProvider(providerId);
 }

@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { PROMPT_STARTERS, getProviderById } from '../lib/providers';
 import {
+  computeTokenCapacityProgress,
   estimateAssistantResponseStats,
   formatElapsedMs,
   formatTokensPerSec,
@@ -26,6 +27,7 @@ interface MessageListProps {
   liveStatus: string | null;
   providerId: ProviderId;
   hasActiveKey: boolean;
+  maxTokens: number;
   onSelectStarter: (prompt: string, opts?: { enableSearch?: boolean; enableJson?: boolean }) => void;
   onDeleteMessage: (id: string) => void;
   onEditUserMessage: (id: string, newContent: string) => void;
@@ -113,12 +115,83 @@ function ResponseTokenEstimate({
   );
 }
 
+function TokenCapacityBar({
+  content,
+  thinking,
+  metrics,
+  maxTokens,
+  isActivelyStreaming,
+}: {
+  content: string;
+  thinking?: string;
+  metrics?: ChatMessage['metrics'];
+  maxTokens: number;
+  isActivelyStreaming: boolean;
+}) {
+  const stats = estimateAssistantResponseStats(content, thinking);
+  const hasMeasuredCompletion =
+    !isActivelyStreaming &&
+    metrics?.completionTokens !== undefined &&
+    metrics.completionTokens > 0;
+  const usedTokens = hasMeasuredCompletion
+    ? metrics.completionTokens!
+    : stats.totalEstimatedTokens;
+
+  if (!isActivelyStreaming && usedTokens === 0) return null;
+
+  const progress = computeTokenCapacityProgress(usedTokens, maxTokens);
+  if (!progress) return null;
+
+  const barColor =
+    progress.level === 'critical'
+      ? 'bg-red-500 dark:bg-red-400'
+      : progress.level === 'warning'
+        ? 'bg-amber-500 dark:bg-amber-400'
+        : isActivelyStreaming
+          ? 'bg-[#E04F26] dark:bg-[#F0643C]'
+          : 'bg-zinc-400 dark:bg-zinc-500';
+
+  const prefix = hasMeasuredCompletion ? '' : '~';
+
+  return (
+    <div
+      data-testid="assistant-token-progress"
+      title={`Response length: ${prefix}${progress.usedTokens.toLocaleString()} of ${progress.maxTokens.toLocaleString()} max completion tokens (${progress.percent}%)`}
+      className="mt-2 flex items-center gap-2.5"
+    >
+      <div
+        role="progressbar"
+        aria-label="Response token limit capacity"
+        aria-valuenow={progress.usedTokens}
+        aria-valuemin={0}
+        aria-valuemax={progress.maxTokens}
+        className="h-1 w-36 overflow-hidden rounded-full bg-zinc-200/80 sm:w-44 dark:bg-zinc-800/90"
+      >
+        <div
+          className={`h-full rounded-full transition-[width,background-color] duration-200 ease-out ${barColor}`}
+          style={{
+            width: `${
+              progress.percent > 0 ? Math.max(progress.percent, 2) : isActivelyStreaming ? 2 : 0
+            }%`,
+          }}
+        />
+      </div>
+      <span className="font-mono text-[10px] text-zinc-400 tabular-nums dark:text-zinc-500">
+        {prefix}
+        {progress.usedTokens.toLocaleString()} / {progress.maxTokens.toLocaleString()} tok (
+        {progress.percent}%)
+      </span>
+    </div>
+  );
+}
+
 export function MessageList({
   messages,
   isStreaming,
   liveStatus,
   providerId,
   hasActiveKey,
+  maxTokens,
   onSelectStarter,
   onDeleteMessage,
   onEditUserMessage,
@@ -502,6 +575,17 @@ export function MessageList({
                       )}
                     </div>
                   )}
+
+                {/* Token Limit Capacity Progress Bar */}
+                {isAssistant && !message.error && (
+                  <TokenCapacityBar
+                    content={message.content}
+                    thinking={message.thinking}
+                    metrics={message.metrics}
+                    maxTokens={message.paramsSnapshot?.maxTokens ?? maxTokens}
+                    isActivelyStreaming={isStreaming && isLast}
+                  />
+                )}
               </div>
             )}
           </motion.article>

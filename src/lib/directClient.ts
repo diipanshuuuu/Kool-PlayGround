@@ -3,8 +3,10 @@ import {
   parseAnthropicSseLine,
   parseOpenAISseLine,
 } from './streamParser';
+import { normalizeProviderModels } from './modelDiscovery';
 import type {
   AppSseEvent,
+  ModelOption,
   PlaygroundParams,
   ProviderId,
   SearchCitation,
@@ -260,6 +262,65 @@ export async function verifyProviderKeyDirect(args: {
         err instanceof Error
           ? `${err.message} (If using a custom endpoint without browser CORS enabled, deploy with Firebase App Hosting or run locally via npm run dev.)`
           : 'Could not reach provider API directly from browser.',
+    };
+  }
+}
+
+export async function fetchProviderModelsDirect(args: {
+  provider: ProviderId;
+  apiKey: string;
+  customBaseUrl?: string;
+  signal?: AbortSignal;
+}): Promise<{ ok: boolean; models: ModelOption[]; error?: string }> {
+  const { provider, apiKey, customBaseUrl, signal } = args;
+  const baseUrl = resolveDirectProviderBaseUrl(provider, customBaseUrl);
+  if (!baseUrl) {
+    return { ok: false, models: [], error: 'Enter a valid http(s) Base URL first.' };
+  }
+
+  try {
+    const url =
+      provider === 'anthropic' ? `${baseUrl}/models?limit=100` : `${baseUrl}/models`;
+    const headers: Record<string, string> = {};
+
+    if (provider === 'anthropic') {
+      headers['x-api-key'] = apiKey;
+      headers['anthropic-version'] = '2023-06-01';
+      headers['anthropic-dangerous-direct-browser-access'] = 'true';
+    } else {
+      headers.Authorization = `Bearer ${apiKey}`;
+      if (provider === 'openrouter') {
+        if (typeof window !== 'undefined' && window.location?.origin) {
+          headers['HTTP-Referer'] = window.location.origin;
+        }
+        headers['X-Title'] = 'Kool PlayGround';
+      }
+    }
+
+    const resp = await fetch(url, { method: 'GET', headers, signal });
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => '');
+      return {
+        ok: false,
+        models: [],
+        error: formatProviderError(errText || `Could not fetch models (HTTP ${resp.status}).`),
+      };
+    }
+
+    const json = (await resp.json()) as unknown;
+    const models = normalizeProviderModels(provider, json);
+    return { ok: true, models };
+  } catch (err) {
+    if ((err as Error)?.name === 'AbortError') {
+      return { ok: false, models: [], error: 'Model fetch cancelled.' };
+    }
+    return {
+      ok: false,
+      models: [],
+      error:
+        err instanceof Error
+          ? err.message
+          : 'Could not fetch models directly from provider.',
     };
   }
 }

@@ -107,6 +107,20 @@ export interface SavedSession {
   updatedAt: number;
 }
 
+export interface AutoSavedChatState {
+  version: 1;
+  provider: ProviderId;
+  model: string;
+  customBaseUrl: string;
+  customModelId: string;
+  systemPrompt: string;
+  composerText: string;
+  params: PlaygroundParams;
+  messages: ChatMessage[];
+  activeSessionId: string | null;
+  savedAt: number;
+}
+
 export interface SavedSystemPrompt {
   id: string;
   title: string;

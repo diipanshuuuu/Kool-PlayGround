@@ -49,6 +49,7 @@ import {
 import { countWords, estimateTokens, parseAppSseLine } from './lib/streamParser';
 import { classifyPromptShotType } from './lib/promptAnalysis';
 import {
+  fetchProviderModelsDirect,
   isStaticFallbackResponse,
   streamDirectProviderChat,
 } from './lib/directClient';
@@ -57,18 +58,37 @@ import {
   loadPromptLibrary,
   upsertSavedPrompt,
 } from './lib/promptLibraryStorage';
+import {
+  AUTOSAVE_DEBOUNCE_MS,
+  AUTOSAVE_INTERVAL_MS,
+  clearAutoSavedChatState,
+  createAutoSaveFingerprint,
+  hasMeaningfulChatState,
+  loadAutoSavedChatState,
+  saveAutoSavedChatState,
+  type AutoSaveSnapshotInput,
+} from './lib/autoSaveStorage';
 import { formatShortcutHint, matchGlobalShortcut } from './lib/shortcuts';
 import type {
   ApiKeyStore,
   AppSseEvent,
+  AutoSavedChatState,
   ChatMessage,
   KeyStorageMode,
+  ModelOption,
   PlaygroundParams,
   ProviderId,
   SavedSession,
   SavedSystemPrompt,
   SearchCitation,
 } from './lib/types';
+
+interface ProviderModelsCacheEntry {
+  models: ModelOption[];
+  status: 'idle' | 'loading' | 'loaded' | 'error';
+  error?: string;
+  keySignature: string;
+}
 
 const THEME_STORAGE_KEY = 'kestrel_theme_v1';
 
@@ -102,25 +122,62 @@ export default function App() {
     }
   }, [isDark]);
 
-  // API keys: loads ONLY explicitly saved localStorage keys; session keys live strictly in React memory
-  const [apiKeys, setApiKeys] = useState<ApiKeyStore>(() => loadPersistedKeys());
+  // Load persisted keys & any auto-saved workspace draft once on initial mount
+  const initialBootstrapRef = useRef<{
+    persistedKeys: ApiKeyStore;
+    autoSaved: AutoSavedChatState | null;
+    initialProvider: ProviderId;
+    shouldOpenVault: boolean;
+  } | null>(null);
+  if (initialBootstrapRef.current === null) {
+    const persistedKeys = loadPersistedKeys();
+    const autoSaved = loadAutoSavedChatState();
+    const initialProvider = autoSaved?.provider ?? resolveInitialProvider(persistedKeys);
+    const hasRestoredSandboxWork = Boolean(
+      autoSaved && autoSaved.provider === 'sandbox' && hasMeaningfulChatState(autoSaved)
+    );
+    initialBootstrapRef.current = {
+      persistedKeys,
+      autoSaved,
+      initialProvider,
+      shouldOpenVault: shouldLaunchToVault(persistedKeys) && !hasRestoredSandboxWork,
+    };
+  }
+  const initialBootstrap = initialBootstrapRef.current;
 
-  // Provider, model, and parameter state (auto-selects first saved provider if keys exist)
-  const [providerId, setProviderId] = useState<ProviderId>(() =>
-    resolveInitialProvider(loadPersistedKeys())
+  // API keys: loads ONLY explicitly saved localStorage keys; session keys live strictly in React memory
+  const [apiKeys, setApiKeys] = useState<ApiKeyStore>(() => initialBootstrap.persistedKeys);
+
+  // Provider, model, and parameter state (restores auto-saved draft or auto-selects first saved provider)
+  const [providerId, setProviderId] = useState<ProviderId>(() => initialBootstrap.initialProvider);
+  const [modelId, setModelId] = useState<string>(
+    () =>
+      initialBootstrap.autoSaved?.model ??
+      getDefaultModelForProvider(initialBootstrap.initialProvider)
   );
-  const [modelId, setModelId] = useState<string>(() =>
-    getDefaultModelForProvider(resolveInitialProvider(loadPersistedKeys()))
+  const [customBaseUrl, setCustomBaseUrl] = useState<string>(
+    () => initialBootstrap.autoSaved?.customBaseUrl ?? 'https://api.together.xyz/v1'
   );
-  const [customBaseUrl, setCustomBaseUrl] = useState<string>('https://api.together.xyz/v1');
-  const [customModelId, setCustomModelId] = useState<string>('');
-  const [params, setParams] = useState<PlaygroundParams>(DEFAULT_PLAYGROUND_PARAMS);
+  const [customModelId, setCustomModelId] = useState<string>(
+    () => initialBootstrap.autoSaved?.customModelId ?? ''
+  );
+  const [params, setParams] = useState<PlaygroundParams>(
+    () => initialBootstrap.autoSaved?.params ?? DEFAULT_PLAYGROUND_PARAMS
+  );
 
   // Prompt & Conversation state
-  const [systemPrompt, setSystemPrompt] = useState<string>('');
-  const [systemExpanded, setSystemExpanded] = useState<boolean>(false);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [composerText, setComposerText] = useState<string>('');
+  const [systemPrompt, setSystemPrompt] = useState<string>(
+    () => initialBootstrap.autoSaved?.systemPrompt ?? ''
+  );
+  const [systemExpanded, setSystemExpanded] = useState<boolean>(() =>
+    Boolean(initialBootstrap.autoSaved?.systemPrompt.trim())
+  );
+  const [messages, setMessages] = useState<ChatMessage[]>(
+    () => initialBootstrap.autoSaved?.messages ?? []
+  );
+  const [composerText, setComposerText] = useState<string>(
+    () => initialBootstrap.autoSaved?.composerText ?? ''
+  );
   const [validationError, setValidationError] = useState<string | null>(null);
 
   // Streaming state
@@ -133,25 +190,36 @@ export default function App() {
   // Layout & Modal state — open API Key Vault on initial load when no saved keys exist
   const [isParamsOpenDesktop, setIsParamsOpenDesktop] = useState<boolean>(true);
   const [isParamsOpenMobile, setIsParamsOpenMobile] = useState<boolean>(false);
-  const [isVaultEntryMode, setIsVaultEntryMode] = useState<boolean>(() =>
-    shouldLaunchToVault(loadPersistedKeys())
+  const [isVaultEntryMode, setIsVaultEntryMode] = useState<boolean>(
+    () => initialBootstrap.shouldOpenVault
   );
-  const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState<boolean>(() =>
-    shouldLaunchToVault(loadPersistedKeys())
+  const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState<boolean>(
+    () => initialBootstrap.shouldOpenVault
   );
   const [isCodeModalOpen, setIsCodeModalOpen] = useState<boolean>(false);
   const [isSessionsModalOpen, setIsSessionsModalOpen] = useState<boolean>(false);
   const [isPromptLibraryOpen, setIsPromptLibraryOpen] = useState<boolean>(false);
   const [promptLibraryCreateMode, setPromptLibraryCreateMode] = useState<boolean>(false);
 
-  // Saved local sessions & system prompt library
+  // Saved local sessions, system prompt library, & live discovered models per provider
   const [savedSessions, setSavedSessions] = useState<SavedSession[]>(() => loadSavedSessions());
   const [savedPrompts, setSavedPrompts] = useState<SavedSystemPrompt[]>(() => loadPromptLibrary());
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(
+    () => initialBootstrap.autoSaved?.activeSessionId ?? null
+  );
   const [sessionToast, setSessionToast] = useState<string | null>(null);
+  const [discoveredModelsByProvider, setDiscoveredModelsByProvider] = useState<
+    Partial<Record<ProviderId, ProviderModelsCacheEntry>>
+  >({});
+  const modelsAbortRef = useRef<AbortController | null>(null);
+  const providerIdRef = useRef<ProviderId>(providerId);
+  const modelIdRef = useRef<string>(modelId);
+  providerIdRef.current = providerId;
+  modelIdRef.current = modelId;
 
   const activeProvider = useMemo(() => getProviderById(providerId), [providerId]);
   const activeKeyEntry = apiKeys[providerId];
+  const activeDiscovery = discoveredModelsByProvider[providerId];
   const effectiveModel = useMemo(
     () => getEffectiveModelId(providerId, modelId, customModelId),
     [providerId, modelId, customModelId]
@@ -181,19 +249,273 @@ export default function App() {
     container.scrollTop = container.scrollHeight;
   }, [messages, liveStatus]);
 
-  const handleProviderChange = useCallback((nextProvider: ProviderId) => {
-    setProviderId(nextProvider);
-    setModelId(getDefaultModelForProvider(nextProvider));
-    setCustomModelId('');
-    setValidationError(null);
-    if (nextProvider === 'anthropic') {
-      setParams((prev) => ({
-        ...prev,
-        temperature: Math.min(prev.temperature, 1),
-        jsonMode: false,
-      }));
+  // Periodic + debounced + page-unload auto-save of current chat state (never stores API keys)
+  const autoSaveSnapshot = useMemo<AutoSaveSnapshotInput>(
+    () => ({
+      provider: providerId,
+      model: modelId,
+      customBaseUrl,
+      customModelId,
+      systemPrompt,
+      composerText,
+      params,
+      messages,
+      activeSessionId,
+    }),
+    [
+      providerId,
+      modelId,
+      customBaseUrl,
+      customModelId,
+      systemPrompt,
+      composerText,
+      params,
+      messages,
+      activeSessionId,
+    ]
+  );
+
+  const latestAutoSaveRef = useRef<AutoSaveSnapshotInput>(autoSaveSnapshot);
+  latestAutoSaveRef.current = autoSaveSnapshot;
+
+  const lastSavedFingerprintRef = useRef<string>(
+    initialBootstrap.autoSaved
+      ? createAutoSaveFingerprint(initialBootstrap.autoSaved)
+      : ''
+  );
+
+  const flushAutoSave = useCallback((override?: AutoSaveSnapshotInput) => {
+    const snapshot = override ?? latestAutoSaveRef.current;
+    const fingerprint = createAutoSaveFingerprint(snapshot);
+    if (fingerprint === lastSavedFingerprintRef.current) return;
+
+    if (!hasMeaningfulChatState(snapshot)) {
+      clearAutoSavedChatState();
+      lastSavedFingerprintRef.current = fingerprint;
+      return;
+    }
+
+    const { saved } = saveAutoSavedChatState(snapshot);
+    if (saved) {
+      lastSavedFingerprintRef.current = fingerprint;
     }
   }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      flushAutoSave();
+    }, AUTOSAVE_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [autoSaveSnapshot, flushAutoSave]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      flushAutoSave();
+    }, AUTOSAVE_INTERVAL_MS);
+    return () => window.clearInterval(interval);
+  }, [flushAutoSave]);
+
+  useEffect(() => {
+    const handleFlush = () => flushAutoSave();
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        flushAutoSave();
+      }
+    };
+    window.addEventListener('beforeunload', handleFlush);
+    window.addEventListener('pagehide', handleFlush);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.removeEventListener('beforeunload', handleFlush);
+      window.removeEventListener('pagehide', handleFlush);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [flushAutoSave]);
+
+  const handleProviderChange = useCallback(
+    (nextProvider: ProviderId) => {
+      setProviderId(nextProvider);
+      const cached = discoveredModelsByProvider[nextProvider];
+      if (cached && cached.models.length > 0) {
+        setModelId(cached.models[0].id);
+      } else {
+        setModelId(getDefaultModelForProvider(nextProvider));
+      }
+      setCustomModelId('');
+      setValidationError(null);
+      if (nextProvider === 'anthropic') {
+        setParams((prev) => ({
+          ...prev,
+          temperature: Math.min(prev.temperature, 1),
+          jsonMode: false,
+        }));
+      }
+    },
+    [discoveredModelsByProvider]
+  );
+
+  const fetchModelsForProvider = useCallback(
+    async (
+      targetProvider: ProviderId,
+      apiKey: string,
+      baseUrl: string,
+      force = false
+    ) => {
+      const trimmedKey = apiKey.trim();
+      if (!trimmedKey || targetProvider === 'sandbox') return;
+      if (targetProvider === 'custom') {
+        try {
+          const parsed = new URL(baseUrl.trim());
+          if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return;
+        } catch {
+          return;
+        }
+      }
+
+      const keySignature = `${trimmedKey}::${
+        targetProvider === 'custom' ? baseUrl.trim().replace(/\/+$/, '') : ''
+      }`;
+
+      if (!force) {
+        const existing = discoveredModelsByProvider[targetProvider];
+        if (
+          existing &&
+          existing.keySignature === keySignature &&
+          (existing.status === 'loading' ||
+            existing.status === 'loaded' ||
+            existing.status === 'error')
+        ) {
+          return;
+        }
+      }
+
+      modelsAbortRef.current?.abort();
+      const controller = new AbortController();
+      modelsAbortRef.current = controller;
+
+      setDiscoveredModelsByProvider((prev) => ({
+        ...prev,
+        [targetProvider]: {
+          models: prev[targetProvider]?.keySignature === keySignature ? prev[targetProvider]?.models ?? [] : [],
+          status: 'loading',
+          error: undefined,
+          keySignature,
+        },
+      }));
+
+      try {
+        let result: { ok: boolean; models: ModelOption[]; error?: string };
+
+        try {
+          const resp = await fetch('/api/proxy/models', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-provider-api-key': trimmedKey,
+            },
+            body: JSON.stringify({
+              provider: targetProvider,
+              customBaseUrl: targetProvider === 'custom' ? baseUrl.trim() : undefined,
+            }),
+            signal: controller.signal,
+          });
+
+          if (isStaticFallbackResponse(resp)) {
+            result = await fetchProviderModelsDirect({
+              provider: targetProvider,
+              apiKey: trimmedKey,
+              customBaseUrl: targetProvider === 'custom' ? baseUrl.trim() : undefined,
+              signal: controller.signal,
+            });
+          } else {
+            const data = (await resp.json()) as {
+              ok?: boolean;
+              models?: ModelOption[];
+              error?: string;
+            };
+            result = {
+              ok: Boolean(data.ok),
+              models: Array.isArray(data.models) ? data.models : [],
+              error: data.error,
+            };
+          }
+        } catch (err) {
+          if ((err as Error)?.name === 'AbortError') return;
+          result = await fetchProviderModelsDirect({
+            provider: targetProvider,
+            apiKey: trimmedKey,
+            customBaseUrl: targetProvider === 'custom' ? baseUrl.trim() : undefined,
+            signal: controller.signal,
+          });
+        }
+
+        if (controller.signal.aborted) return;
+
+        if (result.ok) {
+          setDiscoveredModelsByProvider((prev) => ({
+            ...prev,
+            [targetProvider]: {
+              models: result.models,
+              status: 'loaded',
+              error:
+                result.models.length === 0
+                  ? 'No chat models returned by this endpoint — enter a model ID below.'
+                  : undefined,
+              keySignature,
+            },
+          }));
+
+          // Auto-select an available model if the currently selected one isn't offered by this API key
+          if (
+            result.models.length > 0 &&
+            providerIdRef.current === targetProvider &&
+            !result.models.some((m) => m.id === modelIdRef.current)
+          ) {
+            setModelId(result.models[0].id);
+          }
+        } else {
+          setDiscoveredModelsByProvider((prev) => ({
+            ...prev,
+            [targetProvider]: {
+              models: [],
+              status: 'error',
+              error: result.error || 'Could not load available models for this API key.',
+              keySignature,
+            },
+          }));
+        }
+      } catch (err) {
+        if ((err as Error)?.name === 'AbortError') return;
+        setDiscoveredModelsByProvider((prev) => ({
+          ...prev,
+          [targetProvider]: {
+            models: [],
+            status: 'error',
+            error: err instanceof Error ? err.message : 'Could not fetch available models.',
+            keySignature,
+          },
+        }));
+      }
+    },
+    [discoveredModelsByProvider]
+  );
+
+  // Automatically discover models available on the active provider's API key
+  useEffect(() => {
+    if (!activeProvider.requiresKey || !activeKeyEntry?.key) return;
+    if (providerId === 'custom') {
+      const timer = setTimeout(() => {
+        fetchModelsForProvider('custom', activeKeyEntry.key, customBaseUrl, false);
+      }, 400);
+      return () => clearTimeout(timer);
+    }
+    fetchModelsForProvider(providerId, activeKeyEntry.key, customBaseUrl, false);
+  }, [providerId, activeProvider.requiresKey, activeKeyEntry?.key, customBaseUrl, fetchModelsForProvider]);
+
+  const handleRefreshModels = useCallback(() => {
+    if (!activeProvider.requiresKey || !activeKeyEntry?.key) return;
+    fetchModelsForProvider(providerId, activeKeyEntry.key, customBaseUrl, true);
+  }, [activeProvider.requiresKey, activeKeyEntry?.key, providerId, customBaseUrl, fetchModelsForProvider]);
 
   const handleSaveKey = useCallback(
     (provider: ProviderId, key: string, mode: KeyStorageMode) => {
@@ -233,16 +555,32 @@ export default function App() {
 
   const handleRemoveKey = useCallback((provider: ProviderId) => {
     setApiKeys((prev) => removeProviderKey(prev, provider));
+    setDiscoveredModelsByProvider((prev) => {
+      const next = { ...prev };
+      delete next[provider];
+      return next;
+    });
   }, []);
 
   const handleClearSessionKeys = useCallback(() => {
-    setApiKeys((prev) => clearSessionKeysOnly(prev));
+    setApiKeys((prev) => {
+      const next = clearSessionKeysOnly(prev);
+      setDiscoveredModelsByProvider((curr) => {
+        const cleaned = { ...curr };
+        for (const pid of Object.keys(cleaned) as ProviderId[]) {
+          if (!next[pid]?.key) delete cleaned[pid];
+        }
+        return cleaned;
+      });
+      return next;
+    });
     setSessionToast('Temporary session keys cleared');
     setTimeout(() => setSessionToast(null), 2400);
   }, []);
 
   const handleClearAllKeys = useCallback(() => {
     setApiKeys(clearAllProviderKeys());
+    setDiscoveredModelsByProvider({});
   }, []);
 
   const keyCounts = useMemo(() => countConfiguredKeys(apiKeys), [apiKeys]);
@@ -590,10 +928,19 @@ export default function App() {
   const handleNewChat = useCallback(() => {
     stopGeneration();
     setMessages([]);
+    setComposerText('');
     setValidationError(null);
     setActiveSessionId(null);
+    const clearedSnapshot: AutoSaveSnapshotInput = {
+      ...latestAutoSaveRef.current,
+      messages: [],
+      composerText: '',
+      activeSessionId: null,
+    };
+    latestAutoSaveRef.current = clearedSnapshot;
+    flushAutoSave(clearedSnapshot);
     composerRef.current?.focus();
-  }, [stopGeneration]);
+  }, [stopGeneration, flushAutoSave]);
 
   const handleSaveCurrentSession = useCallback(() => {
     const id = activeSessionId ?? createId();
@@ -1043,6 +1390,7 @@ export default function App() {
               liveStatus={liveStatus}
               providerId={providerId}
               hasActiveKey={Boolean(activeKeyEntry?.key)}
+              maxTokens={params.maxTokens}
               onSelectStarter={handleSelectStarter}
               onDeleteMessage={handleDeleteMessage}
               onEditUserMessage={handleEditUserMessage}
@@ -1179,10 +1527,10 @@ export default function App() {
                         }))
                       }
                       aria-pressed={params.browserSearch}
-                      className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium whitespace-nowrap transition-colors sm:gap-1.5 sm:px-2.5 ${
+                      className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium whitespace-nowrap transition-colors sm:gap-1.5 sm:px-2.5 ${
                         params.browserSearch
-                          ? 'bg-[#E04F26]/12 text-[#C8401B] dark:bg-[#F0643C]/20 dark:text-[#FF9678]'
-                          : 'text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100'
+                          ? 'border-[#E04F26]/25 bg-[#E04F26]/12 text-[#C8401B] dark:border-[#F0643C]/30 dark:bg-[#F0643C]/20 dark:text-[#FF9678]'
+                          : 'border-transparent text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100'
                       }`}
                     >
                       <Globe className="h-3.5 w-3.5 shrink-0" />
@@ -1199,10 +1547,10 @@ export default function App() {
                         setParams((prev) => ({ ...prev, jsonMode: !prev.jsonMode }))
                       }
                       aria-pressed={params.jsonMode}
-                      className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium whitespace-nowrap transition-colors disabled:cursor-not-allowed disabled:opacity-40 sm:gap-1.5 sm:px-2.5 ${
+                      className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium whitespace-nowrap transition-colors disabled:cursor-not-allowed disabled:opacity-40 sm:gap-1.5 sm:px-2.5 ${
                         params.jsonMode
-                          ? 'bg-zinc-900 text-white dark:bg-zinc-800 dark:text-zinc-100 dark:ring-1 dark:ring-zinc-600'
-                          : 'text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100'
+                          ? 'border-zinc-900 bg-zinc-900 text-white dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-100'
+                          : 'border-transparent text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100'
                       }`}
                     >
                       <Braces className="h-3.5 w-3.5 shrink-0" />
@@ -1282,8 +1630,14 @@ export default function App() {
           customBaseUrl={customBaseUrl}
           customModelId={customModelId}
           params={params}
+          messages={messages}
+          systemPrompt={systemPrompt}
+          isDark={isDark}
           activeKeyEntry={activeKeyEntry}
           hasAnySessionKey={keyCounts.session > 0}
+          availableModels={activeDiscovery?.models ?? []}
+          modelsStatus={activeDiscovery?.status ?? 'idle'}
+          modelsError={activeDiscovery?.error}
           isOpenDesktop={isParamsOpenDesktop}
           isOpenMobile={isParamsOpenMobile}
           onCloseMobile={() => setIsParamsOpenMobile(false)}
@@ -1295,6 +1649,7 @@ export default function App() {
           onResetDefaults={() => setParams(DEFAULT_PLAYGROUND_PARAMS)}
           onOpenApiKeyModal={() => setIsApiKeyModalOpen(true)}
           onClearSessionKeys={handleClearSessionKeys}
+          onRefreshModels={handleRefreshModels}
         />
       </div>
 

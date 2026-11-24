@@ -24,6 +24,7 @@ import {
   validateRequestConfig,
 } from './providers';
 import {
+  computeTokenCapacityProgress,
   countWords,
   estimateAssistantResponseStats,
   estimateTokens,
@@ -45,6 +46,15 @@ import {
   loadSavedSessions,
   saveSessionToStorage,
 } from './sessionsStorage';
+import {
+  AUTOSAVE_STORAGE_KEY,
+  clearAutoSavedChatState,
+  createAutoSaveFingerprint,
+  hasMeaningfulChatState,
+  loadAutoSavedChatState,
+  sanitizeAutoSavedChatState,
+  saveAutoSavedChatState,
+} from './autoSaveStorage';
 import { classifyPromptShotType } from './promptAnalysis';
 import {
   buildDirectProviderRequest,
@@ -64,6 +74,15 @@ import {
   loadPromptLibrary,
   upsertSavedPrompt,
 } from './promptLibraryStorage';
+import {
+  filterModelsByQuery,
+  formatContextWindow,
+  normalizeProviderModels,
+} from './modelDiscovery';
+import {
+  computeSessionTokenHistory,
+  formatCompactTokens,
+} from './sessionMetrics';
 
 function createMemoryStorage(): StorageLike {
   const data = new Map<string, string>();
@@ -217,9 +236,21 @@ test('generateCodeSnippet outputs accurate provider snippets without leaking raw
   });
   assert.match(groqCurl, /api\.groq\.com\/openai\/v1\/chat\/completions/);
   assert.match(groqCurl, /\$GROQ_API_KEY/);
+  assert.match(groqCurl, /"max_completion_tokens": 2048/);
   assert.match(groqCurl, /"temperature": 0.25/);
   assert.match(groqCurl, /"browser_search"/);
   assert.match(groqCurl, /"json_object"/);
+
+  const sandboxPy = generateCodeSnippet({
+    providerId: 'sandbox',
+    modelId: 'gemini-4-hydrogen',
+    systemPrompt: '',
+    messages: [],
+    params: DEFAULT_PLAYGROUND_PARAMS,
+    language: 'python',
+  });
+  assert.match(sandboxPy, /model="openai\/gpt-oss-120b"/);
+  assert.match(sandboxPy, /max_completion_tokens=2048/);
 
   const anthropicPy = generateCodeSnippet({
     providerId: 'anthropic',
@@ -677,3 +708,328 @@ test('shouldLaunchToVault and resolveInitialProvider direct users based on saved
   assert.equal(shouldLaunchToVault(reloadedBoth), false);
   assert.equal(resolveInitialProvider(reloadedBoth), 'groq');
 });
+
+test('computeTokenCapacityProgress calculates ratio, percent, clamping, and threshold levels', () => {
+  assert.equal(computeTokenCapacityProgress(50, 0), null);
+  assert.equal(computeTokenCapacityProgress(50, -100), null);
+
+  const normal = computeTokenCapacityProgress(256, 2048);
+  assert.deepEqual(normal, {
+    usedTokens: 256,
+    maxTokens: 2048,
+    ratio: 0.125,
+    percent: 13,
+    level: 'normal',
+  });
+
+  const warning = computeTokenCapacityProgress(800, 1000);
+  assert.equal(warning?.percent, 80);
+  assert.equal(warning?.level, 'warning');
+
+  const critical = computeTokenCapacityProgress(950, 1000);
+  assert.equal(critical?.percent, 95);
+  assert.equal(critical?.level, 'critical');
+
+  const clamped = computeTokenCapacityProgress(1500, 1000);
+  assert.equal(clamped?.ratio, 1);
+  assert.equal(clamped?.percent, 100);
+  assert.equal(clamped?.level, 'critical');
+});
+
+test('normalizeProviderModels discovers chat models per provider, filters non-chat models, and supports search', () => {
+  assert.equal(formatContextWindow(1000000), '1M');
+  assert.equal(formatContextWindow(128000), '128K');
+  assert.equal(formatContextWindow(0), '—');
+
+  // Groq filters out whisper/tts/inactive models and keeps live context windows
+  const groqModels = normalizeProviderModels('groq', {
+    data: [
+      { id: 'whisper-large-v3', active: true },
+      { id: 'playai-tts', active: true },
+      { id: 'deprecated-model', active: false },
+      { id: 'llama-3.3-70b-versatile', active: true, context_window: 131072 },
+      { id: 'moonshotai/kimi-k2-instruct', active: true, context_window: 131072, max_completion_tokens: 16384 },
+    ],
+  });
+  assert.deepEqual(
+    groqModels.map((m) => m.id),
+    ['llama-3.3-70b-versatile', 'moonshotai/kimi-k2-instruct']
+  );
+  assert.equal(groqModels[0].label, 'Llama 3.3 70B Versatile');
+  assert.equal(groqModels[1].contextWindow, '131K');
+
+  // OpenAI filters out embeddings/whisper/tts/dall-e and preserves reasoning flags
+  const openaiModels = normalizeProviderModels('openai', {
+    data: [
+      { id: 'text-embedding-3-large', created: 1700 },
+      { id: 'dall-e-3', created: 1700 },
+      { id: 'whisper-1', created: 1700 },
+      { id: 'o3-mini', created: 1738 },
+      { id: 'gpt-4.1-nano', created: 1745 },
+      { id: 'gpt-4o', created: 1720 },
+    ],
+  });
+  assert.deepEqual(
+    openaiModels.map((m) => m.id),
+    ['gpt-4o', 'o3-mini', 'gpt-4.1-nano']
+  );
+  assert.equal(openaiModels.find((m) => m.id === 'o3-mini')?.supportsTemperature, false);
+
+  // Anthropic preserves display_name labels
+  const anthropicModels = normalizeProviderModels('anthropic', {
+    data: [
+      { id: 'claude-opus-4-20250514', display_name: 'Claude Opus 4', created_at: '2025-05-14T00:00:00Z' },
+      { id: 'claude-sonnet-4-20250514', display_name: 'Claude Sonnet 4', created_at: '2025-05-14T00:00:00Z' },
+    ],
+  });
+  assert.equal(anthropicModels.length, 2);
+  assert.equal(anthropicModels.find((m) => m.id === 'claude-opus-4-20250514')?.label, 'Claude Opus 4');
+
+  // OpenRouter parses context_length and top_provider limits
+  const openrouterModels = normalizeProviderModels('openrouter', {
+    data: [
+      {
+        id: 'google/gemini-2.5-pro',
+        name: 'Google: Gemini 2.5 Pro',
+        context_length: 1000000,
+        top_provider: { max_completion_tokens: 65536 },
+      },
+    ],
+  });
+  assert.equal(openrouterModels[0].contextWindow, '1M');
+  assert.equal(openrouterModels[0].maxOutputTokens, 65536);
+  assert.equal(openrouterModels[0].label, 'Google: Gemini 2.5 Pro');
+
+  // Custom endpoint models work with getEffectiveModelId without requiring manual override
+  const customModels = normalizeProviderModels('custom', {
+    data: [{ id: 'Qwen/Qwen2.5-72B-Instruct-Turbo' }, { id: 'BAAI/bge-large-en-v1.5-embedding' }],
+  });
+  assert.deepEqual(
+    customModels.map((m) => m.id),
+    ['Qwen/Qwen2.5-72B-Instruct-Turbo']
+  );
+  assert.equal(
+    getEffectiveModelId('custom', 'Qwen/Qwen2.5-72B-Instruct-Turbo', ''),
+    'Qwen/Qwen2.5-72B-Instruct-Turbo'
+  );
+  assert.equal(getEffectiveModelId('custom', 'custom-model', ''), '');
+
+  // Query filtering matches both ID and display label
+  assert.equal(filterModelsByQuery(openaiModels, 'nano').length, 1);
+  assert.equal(filterModelsByQuery(groqModels, 'versatile').length, 1);
+  assert.equal(filterModelsByQuery(groqModels, 'nonexistent').length, 0);
+});
+
+test('autoSaveStorage saves, restores, fingerprints, sanitizes, and clears chat state without storing API keys', () => {
+  const storage = createMemoryStorage();
+
+  const pristine = {
+    provider: 'groq' as const,
+    model: 'openai/gpt-oss-120b',
+    customBaseUrl: 'https://api.together.xyz/v1',
+    customModelId: '',
+    systemPrompt: '',
+    composerText: '',
+    params: DEFAULT_PLAYGROUND_PARAMS,
+    messages: [],
+    activeSessionId: null,
+  };
+  assert.equal(hasMeaningfulChatState(pristine), false);
+
+  const activeDraft = {
+    ...pristine,
+    provider: 'openai' as const,
+    model: 'gpt-4.1-mini',
+    systemPrompt: 'You are a concise staff engineer.',
+    composerText: 'Compare Raft and Paxos',
+    params: { ...DEFAULT_PLAYGROUND_PARAMS, temperature: 0.3, jsonMode: true },
+    messages: [
+      { id: 'u1', role: 'user' as const, content: 'Hello', createdAt: 1000 },
+      {
+        id: 'a1',
+        role: 'assistant' as const,
+        content: 'Hi there!',
+        modelUsed: 'gpt-4.1-mini',
+        providerUsed: 'openai' as const,
+        createdAt: 1100,
+      },
+    ],
+    activeSessionId: 'sess-42',
+  };
+  assert.equal(hasMeaningfulChatState(activeDraft), true);
+
+  // Fingerprint is stable across identical state and detects edits
+  const fp1 = createAutoSaveFingerprint(activeDraft);
+  const fp2 = createAutoSaveFingerprint({ ...activeDraft });
+  const fp3 = createAutoSaveFingerprint({ ...activeDraft, composerText: 'Compare Raft and Paxos!' });
+  assert.equal(fp1, fp2);
+  assert.notEqual(fp1, fp3);
+
+  // Save & restore roundtrip
+  const saveRes = saveAutoSavedChatState(activeDraft, storage, 5000);
+  assert.equal(saveRes.saved, true);
+  assert.equal(saveRes.savedAt, 5000);
+
+  const rawStored = storage.getItem(AUTOSAVE_STORAGE_KEY) ?? '';
+  assert.ok(!rawStored.includes('apiKey'));
+  assert.ok(!rawStored.includes('apiKeys'));
+
+  const restored = loadAutoSavedChatState(storage);
+  assert.ok(restored);
+  assert.equal(restored.provider, 'openai');
+  assert.equal(restored.model, 'gpt-4.1-mini');
+  assert.equal(restored.systemPrompt, 'You are a concise staff engineer.');
+  assert.equal(restored.composerText, 'Compare Raft and Paxos');
+  assert.equal(restored.params.temperature, 0.3);
+  assert.equal(restored.params.jsonMode, true);
+  assert.equal(restored.messages.length, 2);
+  assert.equal(restored.activeSessionId, 'sess-42');
+  assert.equal(restored.savedAt, 5000);
+
+  // Corrupted or unknown-provider payloads fail safely to null
+  assert.equal(sanitizeAutoSavedChatState({ provider: 'unknown-vendor' }), null);
+  storage.setItem(AUTOSAVE_STORAGE_KEY, '{invalid-json');
+  assert.equal(loadAutoSavedChatState(storage), null);
+
+  // QuotaExceededError fallback trims to latest 20 messages and succeeds
+  let attempts = 0;
+  const tightStorage: StorageLike = {
+    getItem: (k) => storage.getItem(k),
+    setItem: (k, v) => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('QuotaExceededError');
+      storage.setItem(k, v);
+    },
+    removeItem: (k) => storage.removeItem(k),
+  };
+  const manyMessages = Array.from({ length: 35 }, (_, i) => ({
+    id: `m-${i}`,
+    role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
+    content: `msg ${i}`,
+    createdAt: 1000 + i,
+  }));
+  const quotaRes = saveAutoSavedChatState({ ...activeDraft, messages: manyMessages }, tightStorage);
+  assert.equal(quotaRes.saved, true);
+  const trimmedRestored = loadAutoSavedChatState(tightStorage);
+  assert.equal(trimmedRestored?.messages.length, 20);
+  assert.equal(trimmedRestored?.messages[0]?.id, 'm-15');
+
+  // Clear removes persisted draft completely
+  clearAutoSavedChatState(storage);
+  assert.equal(loadAutoSavedChatState(storage), null);
+});
+
+test('computeSessionTokenHistory and formatCompactTokens aggregate per-turn measured and estimated token usage', () => {
+  // Compact token formatting
+  assert.equal(formatCompactTokens(0), '0');
+  assert.equal(formatCompactTokens(420), '420');
+  assert.equal(formatCompactTokens(1250), '1.3K');
+  assert.equal(formatCompactTokens(125000), '125K');
+  assert.equal(formatCompactTokens(1500000), '1.5M');
+
+  // Empty chat produces zeroed summary
+  const empty = computeSessionTokenHistory([], '');
+  assert.equal(empty.turns.length, 0);
+  assert.equal(empty.totalTokens, 0);
+  assert.equal(empty.peakTurnTokens, 0);
+  assert.equal(empty.averageTokensPerTurn, 0);
+  assert.equal(empty.hasMeasuredUsage, false);
+
+  // Multi-turn chat with measured API usage, fallback estimated turn with reasoning, and trailing user prompt
+  const summary = computeSessionTokenHistory(
+    [
+      {
+        id: 'u-1',
+        role: 'user',
+        content: 'Explain consistent hashing briefly.',
+        createdAt: 1000,
+      },
+      {
+        id: 'a-1',
+        role: 'assistant',
+        content: 'Consistent hashing maps keys and nodes onto a ring so resizing moves minimal keys.',
+        modelUsed: 'gpt-4.1-mini',
+        metrics: {
+          promptTokens: 120,
+          completionTokens: 80,
+          totalTokens: 200,
+          elapsedMs: 640,
+        },
+        createdAt: 1500,
+      },
+      {
+        id: 'u-2',
+        role: 'user',
+        content: 'Now add virtual nodes.',
+        createdAt: 2000,
+      },
+      {
+        id: 'a-2',
+        role: 'assistant',
+        content: 'Virtual nodes place multiple tokens per physical server to smooth load variance.',
+        thinking: 'Discuss ring hotspots and replication factor.',
+        modelUsed: 'gpt-4.1-mini',
+        createdAt: 2600,
+      },
+      {
+        id: 'u-3',
+        role: 'user',
+        content: 'Show a Go example.',
+        createdAt: 3000,
+      },
+      {
+        id: 'a-err',
+        role: 'assistant',
+        content: '',
+        error: 'Rate limit exceeded',
+        createdAt: 3100,
+      },
+    ],
+    'Be concise.'
+  );
+
+  assert.equal(summary.turns.length, 3);
+  assert.equal(summary.hasMeasuredUsage, true);
+
+  // Turn 1 uses exact measured API metrics
+  assert.equal(summary.turns[0].label, 'T1');
+  assert.equal(summary.turns[0].promptTokens, 120);
+  assert.equal(summary.turns[0].completionTokens, 80);
+  assert.equal(summary.turns[0].totalTokens, 200);
+  assert.equal(summary.turns[0].cumulativeTokens, 200);
+  assert.equal(summary.turns[0].estimated, false);
+  assert.equal(summary.turns[0].modelUsed, 'gpt-4.1-mini');
+
+  // Turn 2 falls back to character-based estimates including reasoning trace
+  assert.equal(summary.turns[1].label, 'T2');
+  assert.equal(summary.turns[1].estimated, true);
+  assert.ok(summary.turns[1].promptTokens > 0);
+  assert.ok(summary.turns[1].completionTokens > estimateTokens('Virtual nodes place multiple tokens per physical server to smooth load variance.'));
+  assert.equal(
+    summary.turns[1].cumulativeTokens,
+    summary.turns[0].totalTokens + summary.turns[1].totalTokens
+  );
+
+  // Turn 3 captures the trailing user prompt cleanly and ignores empty error-only reply
+  assert.equal(summary.turns[2].label, 'T3');
+  assert.equal(summary.turns[2].estimated, true);
+  assert.ok(summary.turns[2].promptTokens > 0);
+  assert.equal(summary.turns[2].completionTokens, 0);
+
+  // Totals, peak, and average remain internally consistent
+  assert.equal(
+    summary.totalTokens,
+    summary.totalPromptTokens + summary.totalCompletionTokens
+  );
+  assert.equal(summary.totalTokens, summary.turns[2].cumulativeTokens);
+  assert.equal(
+    summary.peakTurnTokens,
+    Math.max(...summary.turns.map((t) => t.totalTokens))
+  );
+  assert.equal(
+    summary.averageTokensPerTurn,
+    Math.round(summary.totalTokens / summary.turns.length)
+  );
+});
+
+

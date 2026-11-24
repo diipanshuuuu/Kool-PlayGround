@@ -320,10 +320,10 @@ export function ApiKeyModal({
                   role="tab"
                   aria-selected={isActive}
                   onClick={() => handleSelectProviderTab(p.id)}
-                  className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium whitespace-nowrap transition-colors ${
+                  className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium whitespace-nowrap transition-colors ${
                     isActive
-                      ? 'bg-white text-zinc-950 shadow-xs ring-1 ring-zinc-200 dark:bg-[#1B1D22] dark:text-zinc-50 dark:ring-zinc-700'
-                      : 'text-zinc-600 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-100'
+                      ? 'border-zinc-200 bg-white text-zinc-950 shadow-xs dark:border-zinc-700 dark:bg-[#1B1D22] dark:text-zinc-50'
+                      : 'border-transparent text-zinc-600 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-100'
                   }`}
                 >
                   <span>{p.shortName}</span>

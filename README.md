@@ -6,28 +6,33 @@ A minimal, distraction-free, bring-your-own-key (BYOK) LLM playground inspired b
 
 ## Features
 
-- **Flexible BYOK API Key Vault**
-  - Supports **Groq**, **OpenAI**, **Anthropic**, **OpenRouter**, and any **Custom OpenAI-Compatible** endpoint (e.g., Together, Fireworks, DeepSeek, Ollama), plus a **Built-in Sandbox** mode.
+- **Flexible BYOK API Key Vault & Smart Launch**
+  - Supports **Groq** (defaulting to `openai/gpt-oss-120b`), **OpenAI**, **Anthropic**, **OpenRouter**, and any **Custom OpenAI-Compatible** endpoint (e.g., Together, Fireworks, DeepSeek, Ollama), plus a **Built-in Sandbox** mode.
+  - Launches directly into the API Key Vault on first visit when no keys are saved, and enters the workspace immediately on return visits with saved keys.
   - **Session-only mode (default)**: API keys stay strictly in browser memory and clear automatically on page refresh or when you click **End session**.
   - **Local browser storage mode**: Opt in to persist keys in your browser's `localStorage` across visits, switch modes per provider, or clear individual/all keys at any time.
   - **Stateless key verification**: Optional connection check against the selected provider without storing or logging credentials on any server.
+- **Live Per-API-Key Model Discovery**
+  - Queries each provider's live `/models` endpoint using your active key, filters out non-chat models (embeddings, Whisper, TTS, image, moderation), auto-selects an available model if the default isn't enabled on your key, and provides instant search filtering when >10 models are available.
 - **Advanced Parameter Controls & Presets**
   - Paired sliders and numeric inputs for **Temperature**, **Top P**, **Max Completion Tokens**, **Frequency Penalty**, **Presence Penalty**, **Seed**, **Stop Sequences**, and **Reasoning Effort** (on supported models).
   - One-click **Precise**, **Balanced**, and **Creative** sampling presets, plus a live workspace parameter readout and per-response parameter stamps so you can compare how settings affect output.
-- **Live Prompt Shot-Type & Token Indicator**
-  - Real-time input token estimate paired with automatic **Zero-shot**, **One-shot**, and **Few-shot** classification directly in the composer bar (accounting for demonstrations in both the user prompt and system prompt).
+- **Live Prompt & Response Telemetry**
+  - Real-time composer **token count**, **word count**, and automatic **Zero-shot**, **One-shot**, and **Few-shot** classification (accounting for demonstrations in both the user prompt and system prompt).
+  - Per-response assistant token/word estimates paired with a live **token-limit capacity progress bar** that fills as the model generates.
 - **Browser Search Grounding**
   - Toggle **Browser Search** to use native web search on supported models (`openai/gpt-oss-*`, `groq/compound*`, Sandbox) or live web snippet grounding with numbered clickable source citations on any other model.
 - **Developer Workflow Tools**
-  - Collapsible **System Prompt** editor with live token estimate.
+  - Collapsible **System Prompt** editor paired with a **Prompt Library** drawer to save, search, edit, and load recurring system prompts locally.
+  - Global keyboard shortcuts: `Cmd/Ctrl + Enter` to send, `Cmd/Ctrl + K` to open API Keys, and `Cmd/Ctrl + N` to start a new chat.
   - **JSON Mode** and **Streaming / Non-streaming** toggle with mid-stream **Stop** cancellation.
-  - **View Code** exporter generating runnable `cURL`, `JavaScript`, and `Python` snippets with environment variable placeholders (never exporting raw keys).
-  - **Saved Sessions** stored locally in your browser (without API keys), Markdown + GFM rendering with copyable code blocks, measured response timing (elapsed time, TTFT, tokens/sec), and **Light / Dark** themes.
+  - **View Code & Export** modal generating runnable `cURL`, `JavaScript`, and `Python` snippets (using env-var placeholders, never raw keys) plus one-click **Export as Markdown (`.md`)** preserving full conversation formatting, reasoning traces, and citations.
+  - **Saved Sessions** stored locally in your browser (without API keys) with active-session highlighting, Markdown + GFM rendering with copyable code blocks, measured response timing (elapsed time, TTFT, tokens/sec), and **Light / Dark** themes.
 
 ## Tech Stack
 
-- **Frontend**: React 19, TypeScript, Tailwind CSS v4, Lucide icons, `react-markdown` + `remark-gfm`
-- **Backend**: Express + Vite middleware (`server.ts`) providing a stateless BYOK streaming proxy, key verification route, live web search grounding, and optional server-side sandbox
+- **Frontend**: React 19, TypeScript, Tailwind CSS v4, `motion/react`, Lucide icons, `react-markdown` + `remark-gfm`
+- **Backend**: Express + Vite middleware (`server.ts`) providing a stateless BYOK streaming proxy, key verification and live `/models` discovery routes, live web search grounding, and optional server-side sandbox
 - **Testing**: Node's built-in test runner (`node:test`) via `tsx`
 
 ## Getting Started

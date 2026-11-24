@@ -183,6 +183,35 @@ export function estimateAssistantResponseStats(
   };
 }
 
+export interface TokenCapacityProgress {
+  usedTokens: number;
+  maxTokens: number;
+  ratio: number;
+  percent: number;
+  level: 'normal' | 'warning' | 'critical';
+}
+
+export function computeTokenCapacityProgress(
+  usedTokens: number,
+  maxTokens: number
+): TokenCapacityProgress | null {
+  if (!Number.isFinite(maxTokens) || maxTokens <= 0) return null;
+  const safeUsed = Number.isFinite(usedTokens) ? Math.max(0, Math.round(usedTokens)) : 0;
+  const safeMax = Math.round(maxTokens);
+  const ratio = Math.min(1, safeUsed / safeMax);
+  const percent = Math.min(100, Math.round(ratio * 100));
+  const level: TokenCapacityProgress['level'] =
+    ratio >= 0.92 ? 'critical' : ratio >= 0.75 ? 'warning' : 'normal';
+
+  return {
+    usedTokens: safeUsed,
+    maxTokens: safeMax,
+    ratio,
+    percent,
+    level,
+  };
+}
+
 export function formatElapsedMs(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return '0.00s';
   if (ms < 1000) return `${Math.round(ms)}ms`;
